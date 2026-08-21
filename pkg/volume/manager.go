@@ -35,7 +35,8 @@ func NewManager(root string) (*Manager, error) {
 	return m, nil
 }
 
-func validName(name string) bool {
+// ValidName reports whether name is safe for use as a local named-volume directory.
+func ValidName(name string) bool {
 	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") || strings.Contains(name, string(os.PathSeparator)) {
 		return false
 	}
@@ -74,7 +75,7 @@ func (m *Manager) loadFromDisk() error {
 			slog.Warn("skip invalid volume metadata", "path", volPath, "err", err)
 			continue
 		}
-		if !validName(vol.Name) {
+		if !ValidName(vol.Name) {
 			slog.Warn("skip invalid volume name", "path", volPath, "name", vol.Name)
 			continue
 		}
@@ -155,7 +156,7 @@ func (m *Manager) Create(name string, driver string, opts map[string]string, lab
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !validName(name) {
+	if !ValidName(name) {
 		return nil, fmt.Errorf("invalid volume name: %q contains path traversal characters", name)
 	}
 	if _, exists := m.volumes[name]; exists {

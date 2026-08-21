@@ -842,42 +842,39 @@ func (s *Server) handleContainerCreate(w http.ResponseWriter, r *http.Request) {
 			cfg.Resources.ShmSize = req.HostConfig.ShmSize
 		}
 
-		// Copy HostConfig.Binds -> cfg.Mounts (bind mounts).
+		// Docker Compose encodes both host bind mounts and named volumes in
+		// HostConfig.Binds. Preserve the logical named-volume source in container
+		// state and resolve it to a physical path only inside the runtime.
 		for _, bindSpec := range req.HostConfig.Binds {
-			parts := strings.SplitN(bindSpec, ":", 3)
-			var source, target string
-			var readOnly bool
-			if len(parts) >= 2 {
-				source = parts[0]
-				target = parts[1]
+			mnt, err := parseHostConfigBind(bindSpec)
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, err.Error())
+				return
 			}
-			if len(parts) >= 3 && strings.Contains(parts[2], "ro") {
-				readOnly = true
-			}
-			if source != "" && target != "" {
-				// Validate bind mount source: must be absolute and clean (no path traversal).
-				if !filepath.IsAbs(source) || filepath.Clean(source) != source {
-					s.writeError(w, http.StatusBadRequest, "invalid bind mount source: must be an absolute path without traversal")
+			if mnt.Type == common.MountVolume {
+				if err := s.ensureNamedVolume(mnt.Source); err != nil {
+					s.writeError(w, http.StatusInternalServerError, err.Error())
 					return
 				}
-				// HIGH-12: refuse to bind-mount the host root or sensitive system
-				// directories into a container. "-v /:/host" would otherwise give
-				// full host read/write — a trivial escape / host takeover.
-				if isSensitiveBindSource(source) {
-					s.writeError(w, http.StatusForbidden, "bind mount source not allowed: "+source)
-					return
-				}
-				cfg.Mounts = append(cfg.Mounts, common.Mount{
-					Type:     common.MountBind,
-					Source:   source,
-					Target:   target,
-					ReadOnly: readOnly,
-				})
 			}
+			cfg.Mounts = append(cfg.Mounts, mnt)
 		}
 
-		// Copy HostConfig.Mounts -> cfg.Mounts.
-		cfg.Mounts = append(cfg.Mounts, req.HostConfig.Mounts...)
+		// Long-syntax Docker mounts arrive already typed. Ensure named volumes
+		// exist but keep their logical source untouched in cfg.Mounts.
+		for _, mnt := range req.HostConfig.Mounts {
+			if mnt.Type == common.MountVolume {
+				if !volume.ValidName(mnt.Source) {
+					s.writeError(w, http.StatusBadRequest, "invalid named volume source: "+mnt.Source)
+					return
+				}
+				if err := s.ensureNamedVolume(mnt.Source); err != nil {
+					s.writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+			cfg.Mounts = append(cfg.Mounts, mnt)
+		}
 
 		// Copy HostConfig.Tmpfs -> cfg.Mounts (tmpfs mounts).
 		for tmptarget, optStr := range req.HostConfig.Tmpfs {
