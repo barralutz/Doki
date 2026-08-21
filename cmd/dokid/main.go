@@ -270,10 +270,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	androidProviders := dr.NewAndroidProviderRegistry()
 	rt := dr.NewRuntime(execRoot, storeMgr,
 		dr.WithRegistry(registry),
 		dr.WithDNSAddr(dnsAddr),
 		dr.WithVolumeResolver(volumeMgr),
+		dr.WithAndroidProviderRegistry(androidProviders),
 	)
 	logger.Info("runtime mode", "mode", modeString(rt.Mode()))
 	logger.Info("available runtimes", "count", len(registry.Available()))

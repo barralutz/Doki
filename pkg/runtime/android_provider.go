@@ -209,3 +209,34 @@ func cloneImageOCIConfig(src *ImageOCIConfig) *ImageOCIConfig {
 	}
 	return &dst
 }
+
+func (rt *Runtime) selectContainerExecution(ctx context.Context, cfg *Config) (ExecutionMode, *ProviderSelection, error) {
+	if cfg != nil && strings.TrimSpace(cfg.Runtime) != "" {
+		requested := strings.TrimSpace(cfg.Runtime)
+		if requested != "android-native" {
+			// Preserve legacy runtime behavior in Phase 2 while preventing an
+			// automatic provider from overriding an explicit Docker runtime.
+			return rt.mode, nil, nil
+		}
+		sel, err := rt.androidProviders.SelectRequired(ctx, descriptorFromConfig(cfg, nil))
+		if err != nil {
+			return 0, nil, err
+		}
+		if sel == nil {
+			return 0, nil, fmt.Errorf("android-native runtime requested but no provider requires workload")
+		}
+		return ModeAndroidNative, sel, nil
+	}
+
+	if rt.androidProviders == nil {
+		return rt.mode, nil, nil
+	}
+	sel, err := rt.androidProviders.SelectRequired(ctx, descriptorFromConfig(cfg, nil))
+	if err != nil {
+		return 0, nil, err
+	}
+	if sel == nil {
+		return rt.mode, nil, nil
+	}
+	return ModeAndroidNative, sel, nil
+}

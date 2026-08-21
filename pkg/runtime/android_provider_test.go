@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -95,5 +97,75 @@ func TestDescriptorFromConfigDoesNotAliasConfig(t *testing.T) {
 	desc.Ports[0].PrivatePort = 1
 	if cfg.Args[0] != "run" || cfg.Env[0] != "A=1" || cfg.Labels["k"] != "v" || cfg.Mounts[0].Source != "db" || cfg.Ports[0].PrivatePort != 5432 {
 		t.Fatalf("descriptor aliases config: cfg=%+v", cfg)
+	}
+}
+
+func TestRuntimeSelectContainerExecutionUsesRequiredProvider(t *testing.T) {
+	reg := NewAndroidProviderRegistry()
+	_ = reg.Register(&fakeAndroidProvider{id: "fake", match: ProviderMatch{Matched: true, Required: true, Reason: "test"}})
+	rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+	mode, sel, err := rt.selectContainerExecution(context.Background(), &Config{ImageRef: "example:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != ModeAndroidNative || sel == nil || sel.Provider.ID() != "fake" {
+		t.Fatalf("mode=%v selection=%+v", mode, sel)
+	}
+}
+
+func TestRuntimeSelectContainerExecutionFallsBackWithoutProvider(t *testing.T) {
+	rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(NewAndroidProviderRegistry()))
+	mode, sel, err := rt.selectContainerExecution(context.Background(), &Config{ImageRef: "example:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != rt.mode || sel != nil {
+		t.Fatalf("mode=%v legacy=%v selection=%+v", mode, rt.mode, sel)
+	}
+}
+
+func TestRuntimeSelectContainerExecutionExplicitRuntimeBehavior(t *testing.T) {
+	reg := NewAndroidProviderRegistry()
+	_ = reg.Register(&fakeAndroidProvider{id: "fake", match: ProviderMatch{Matched: true, Required: true}})
+	rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+	mode, sel, err := rt.selectContainerExecution(context.Background(), &Config{Runtime: "proot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != rt.mode || sel != nil {
+		t.Fatalf("explicit legacy runtime unexpectedly adapted: mode=%v sel=%+v", mode, sel)
+	}
+
+	empty := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(NewAndroidProviderRegistry()))
+	if _, _, err := empty.selectContainerExecution(context.Background(), &Config{Runtime: "android-native"}); err == nil || !strings.Contains(err.Error(), "android-native runtime requested but no provider requires workload") {
+		t.Fatalf("explicit android-native without provider error=%v", err)
+	}
+}
+
+func TestRuntimeCreateAndroidNativeSkipsInvalidOCIExtraction(t *testing.T) {
+	reg := NewAndroidProviderRegistry()
+	_ = reg.Register(&fakeAndroidProvider{id: "fake", match: ProviderMatch{Matched: true, Required: true, Reason: "test adapter"}})
+	root := t.TempDir()
+	badLayer := filepath.Join(root, "bad-layer.tar")
+	if err := os.WriteFile(badLayer, []byte("not a tar archive"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(filepath.Join(root, "runtime"), nil, WithAndroidProviderRegistry(reg))
+	state, err := rt.Create(&Config{ID: "android-one", ImageRef: "example:1", ImageLayers: []string{badLayer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != ModeAndroidNative {
+		t.Fatalf("mode=%v", state.Mode)
+	}
+	if state.Config.RootfsReady != "" {
+		t.Fatalf("RootfsReady=%q, want empty", state.Config.RootfsReady)
+	}
+	ps, err := rt.loadAndroidProviderState("android-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps.ProviderID != "fake" || ps.MatchReason != "test adapter" {
+		t.Fatalf("provider state=%+v", ps)
 	}
 }

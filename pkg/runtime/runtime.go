@@ -73,17 +73,18 @@ func logChownError(operation, target string, err error) {
 
 // Runtime implements the OCI Runtime Specification.
 type Runtime struct {
-	mu             sync.RWMutex
-	root           string
-	store          *storage.Manager
-	nsMgr          *namespaces.Manager
-	cgMgr          *cgroups.Manager
-	prootMgr       *proot.Manager
-	rootless       bool
-	mode           ExecutionMode
-	registry       *Registry
-	dnsAddr        string // Internal DNS server address (e.g., "127.0.0.11:53")
-	volumeResolver VolumeResolver
+	mu               sync.RWMutex
+	root             string
+	store            *storage.Manager
+	nsMgr            *namespaces.Manager
+	cgMgr            *cgroups.Manager
+	prootMgr         *proot.Manager
+	rootless         bool
+	mode             ExecutionMode
+	registry         *Registry
+	dnsAddr          string // Internal DNS server address (e.g., "127.0.0.11:53")
+	volumeResolver   VolumeResolver
+	androidProviders *AndroidProviderRegistry
 
 	hcMu           sync.Mutex
 	healthCheckers map[string]*HealthChecker
@@ -246,6 +247,13 @@ func WithDNSAddr(addr string) RuntimeOption {
 	}
 }
 
+// WithAndroidProviderRegistry injects registered Android workload providers.
+func WithAndroidProviderRegistry(reg *AndroidProviderRegistry) RuntimeOption {
+	return func(rt *Runtime) {
+		rt.androidProviders = reg
+	}
+}
+
 // NewRuntime creates a new container runtime instance.
 func NewRuntime(root string, store *storage.Manager, opts ...RuntimeOption) *Runtime {
 	rt := &Runtime{
@@ -320,43 +328,65 @@ func (rt *Runtime) Create(cfg *Config) (*ContainerState, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("container ID cannot be empty")
 	}
-
 	if _, err := rt.loadState(cfg.ID); err == nil {
 		return nil, common.NewErrConflict("container", cfg.ID)
 	}
 
+	mode, selection, err := rt.selectContainerExecution(context.Background(), cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	bundleDir := filepath.Join(rt.root, "bundles", cfg.ID)
 	rootfsDir := filepath.Join(bundleDir, "rootfs")
-	_ = common.EnsureDir(bundleDir)
-	_ = common.EnsureDir(rootfsDir)
+	if err := common.EnsureDir(bundleDir); err != nil {
+		return nil, fmt.Errorf("create bundle dir: %w", err)
+	}
+	if err := common.EnsureDir(filepath.Join(rt.root, "containers", cfg.ID)); err != nil {
+		return nil, fmt.Errorf("create container state dir: %w", err)
+	}
 
-	// Copy existing rootfs if provided.
-	if cfg.Rootfs != "" && common.PathExists(cfg.Rootfs) {
-		if err := fuse.CopyDir(cfg.Rootfs, rootfsDir); err != nil {
-			return nil, fmt.Errorf("copy rootfs: %w", err)
+	if mode != ModeAndroidNative {
+		if err := common.EnsureDir(rootfsDir); err != nil {
+			return nil, fmt.Errorf("create rootfs dir: %w", err)
+		}
+		// Copy existing rootfs if provided.
+		if cfg.Rootfs != "" && common.PathExists(cfg.Rootfs) {
+			if err := fuse.CopyDir(cfg.Rootfs, rootfsDir); err != nil {
+				return nil, fmt.Errorf("copy rootfs: %w", err)
+			}
+		}
+		// Extract image layers into rootfs.
+		if err := rt.extractLayers(rootfsDir, cfg.ImageLayers); err != nil {
+			return nil, fmt.Errorf("extract layers: %w", err)
+		}
+		cfg.RootfsReady = rootfsDir
+
+		// Prepare rootfs files.
+		hostname := cfg.ID
+		if len(hostname) > 12 {
+			hostname = hostname[:12]
+		}
+		if cfg.Hostname != "" {
+			hostname = cfg.Hostname
+		}
+		rootfsFiles := map[string]string{
+			"etc/hostname":    fuse.GenerateHostname(hostname),
+			"etc/hosts":       fuse.GenerateHosts(hostname, parseExtraHosts(cfg.ExtraHosts)),
+			"etc/resolv.conf": fuse.GenerateResolvConf(cfg.DNS, cfg.DNSSearch, cfg.DNSOptions, rt.dnsAddr),
+		}
+		_ = fuse.PrepareRootfs(rootfsDir, rootfsFiles, cfg.User)
+	} else {
+		cfg.RootfsReady = ""
+		providerState := AndroidProviderState{
+			Version:     androidProviderStateVersion,
+			ProviderID:  selection.Provider.ID(),
+			MatchReason: selection.Match.Reason,
+		}
+		if err := rt.saveAndroidProviderState(cfg.ID, providerState); err != nil {
+			return nil, err
 		}
 	}
-
-	// Extract image layers into rootfs.
-	if err := rt.extractLayers(rootfsDir, cfg.ImageLayers); err != nil {
-		return nil, fmt.Errorf("extract layers: %w", err)
-	}
-	cfg.RootfsReady = rootfsDir
-
-	// Prepare rootfs files.
-	hostname := cfg.ID
-	if len(hostname) > 12 {
-		hostname = hostname[:12]
-	}
-	if cfg.Hostname != "" {
-		hostname = cfg.Hostname
-	}
-	rootfsFiles := map[string]string{
-		"etc/hostname":    fuse.GenerateHostname(hostname),
-		"etc/hosts":       fuse.GenerateHosts(hostname, parseExtraHosts(cfg.ExtraHosts)),
-		"etc/resolv.conf": fuse.GenerateResolvConf(cfg.DNS, cfg.DNSSearch, cfg.DNSOptions, rt.dnsAddr),
-	}
-	_ = fuse.PrepareRootfs(rootfsDir, rootfsFiles, cfg.User)
 
 	state := &ContainerState{
 		ID:      cfg.ID,
@@ -364,12 +394,14 @@ func (rt *Runtime) Create(cfg *Config) (*ContainerState, error) {
 		Created: time.Now(),
 		Bundle:  bundleDir,
 		Config:  cfg,
-		Mode:    rt.mode,
+		Mode:    mode,
 		LogPath: filepath.Join(rt.root, "containers", cfg.ID, "container.log"),
 	}
 	state.ExitChan = make(chan struct{})
-
 	if err := rt.saveState(state); err != nil {
+		if mode == ModeAndroidNative {
+			_ = os.Remove(rt.androidProviderStatePath(cfg.ID))
+		}
 		return nil, err
 	}
 	return state, nil
