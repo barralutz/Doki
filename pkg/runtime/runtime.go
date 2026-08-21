@@ -1213,42 +1213,11 @@ func (rt *Runtime) startWithProot(cfg *Config, rootfsDir string, logFile *os.Fil
 		prootArgs = proot.AppendAndroidBinds(prootArgs)
 	}
 
-	// Container-specific mounts (bind mounts, tmpfs).
-	// BUG fix: startWithProot was missing mount processing entirely.
-	// Volume mounts (-v) were silently ignored in proot mode.
-	for _, mnt := range cfg.Mounts {
-		switch mnt.Type {
-		case common.MountBind:
-			if mnt.Source != "" && mnt.Target != "" {
-				// Ensure the target directory exists inside the rootfs, clamped
-				// so a crafted target can't MkdirAll outside the container root.
-				targetInRootfs, terr := common.SecureJoin(cleanRootfs, mnt.Target)
-				if terr != nil {
-					return 0, nil, fmt.Errorf("resolve mount target %s: %w", mnt.Target, terr)
-				}
-				if err := os.MkdirAll(targetInRootfs, 0755); err != nil {
-					return 0, nil, fmt.Errorf("create mount target %s: %w", mnt.Target, err)
-				}
-				// proot's -b syntax is host:guest ONLY — it has no ":ro" suffix.
-				// Appending ":ro" made proot treat "guest:ro" as the literal guest
-				// path, so the mount landed at the wrong location and the real
-				// target was empty. proot cannot enforce read-only binds, so we
-				// mount read-write and warn rather than silently break the mount.
-				if mnt.ReadOnly {
-					slog.Warn("proot cannot enforce read-only bind mount; mounting read-write", "target", mnt.Target)
-				}
-				prootArgs = append(prootArgs, "-b", mnt.Source+":"+mnt.Target)
-			}
-		case common.MountTmpfs:
-			target, terr := common.SecureJoin(cleanRootfs, mnt.Target)
-			if terr != nil {
-				return 0, nil, fmt.Errorf("resolve tmpfs target %s: %w", mnt.Target, terr)
-			}
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return 0, nil, fmt.Errorf("create tmpfs target %s: %w", mnt.Target, err)
-			}
-			prootArgs = append(prootArgs, "-b", target+":"+mnt.Target)
-		}
+	// Container-specific mounts are resolved at execution time so persisted
+	// named-volume sources stay logical Docker names.
+	prootArgs, err = rt.appendProotMountArgs(prootArgs, cleanRootfs, cfg.Mounts)
+	if err != nil {
+		return 0, nil, err
 	}
 
 	if cfg.Cwd != "" {
@@ -1488,7 +1457,11 @@ func (rt *Runtime) setupMounts(rootfsDir string, cfg *Config) error {
 	}
 	_ = fuse.ShmMount(filepath.Join(rootfsDir, "dev", "shm"), shmSize)
 
-	for _, mnt := range cfg.Mounts {
+	for _, logical := range cfg.Mounts {
+		mnt, err := rt.ResolveMount(logical)
+		if err != nil {
+			return err
+		}
 		// Resolve the mount target within the rootfs, clamping symlinks and ".."
 		// to the container root so a crafted target ("../../etc", or a symlink
 		// planted by the image) cannot bind-mount over a host path.
@@ -2696,20 +2669,9 @@ func (rt *Runtime) retryWithQemu(cfg *Config, rootfsDir string, logFile *os.File
 		prootArgs = proot.AppendAndroidBinds(prootArgs)
 	}
 
-	// Container-specific mounts.
-	for _, mnt := range cfg.Mounts {
-		switch mnt.Type {
-		case common.MountBind:
-			if mnt.Source != "" && mnt.Target != "" {
-				prootArgs = append(prootArgs, "-b", mnt.Source+":"+mnt.Target)
-			}
-		case common.MountTmpfs:
-			target := filepath.Join(cleanRootfs, mnt.Target)
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return 0, nil, fmt.Errorf("tmpfs mount mkdir %s: %w", target, err)
-			}
-			prootArgs = append(prootArgs, "-b", target+":"+mnt.Target)
-		}
+	prootArgs, err = rt.appendProotMountArgs(prootArgs, cleanRootfs, cfg.Mounts)
+	if err != nil {
+		return 0, nil, err
 	}
 
 	if cfg.Cwd != "" {

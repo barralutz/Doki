@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -64,5 +66,49 @@ func TestRuntimeResolveMountReportsUnknownVolume(t *testing.T) {
 	_, err := rt.ResolveMount(common.Mount{Type: common.MountVolume, Source: "missing", Target: "/data"})
 	if err == nil || !strings.Contains(err.Error(), `resolve named volume "missing"`) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAppendProotMountArgsResolvesNamedVolume(t *testing.T) {
+	rootfs := t.TempDir()
+	logical := common.Mount{Type: common.MountVolume, Source: "db", Target: "/var/lib/data"}
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{"db": "/host/volumes/db/_data"}))
+
+	got, err := rt.appendProotMountArgs([]string{"--base"}, rootfs, []common.Mount{logical})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPair := []string{"-b", "/host/volumes/db/_data:/var/lib/data"}
+	found := false
+	for i := 0; i+1 < len(got); i++ {
+		if got[i] == wantPair[0] && got[i+1] == wantPair[1] {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("proot args = %#v, want pair %#v", got, wantPair)
+	}
+	if logical.Source != "db" || logical.Type != common.MountVolume {
+		t.Fatalf("logical mount mutated: %#v", logical)
+	}
+	if st, err := os.Stat(filepath.Join(rootfs, "var", "lib", "data")); err != nil || !st.IsDir() {
+		t.Fatalf("guest target not created: stat=%v err=%v", st, err)
+	}
+}
+
+func TestAppendProotMountArgsRejectsMissingNamedVolume(t *testing.T) {
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{}))
+	_, err := rt.appendProotMountArgs(nil, t.TempDir(), []common.Mount{{Type: common.MountVolume, Source: "missing", Target: "/data"}})
+	if err == nil || !strings.Contains(err.Error(), `resolve named volume "missing"`) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSetupMountsRejectsMissingNamedVolume(t *testing.T) {
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{}))
+	err := rt.setupMounts(t.TempDir(), &Config{Mounts: []common.Mount{{Type: common.MountVolume, Source: "missing", Target: "/data"}}})
+	if err == nil || !strings.Contains(err.Error(), `resolve named volume "missing"`) {
+		t.Fatalf("setupMounts error = %v, want missing named-volume resolution error", err)
 	}
 }

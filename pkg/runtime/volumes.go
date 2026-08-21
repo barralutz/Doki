@@ -2,6 +2,9 @@ package runtime
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/OpceanAI/Doki/pkg/common"
 )
@@ -35,4 +38,43 @@ func (rt *Runtime) ResolveMount(m common.Mount) (common.Mount, error) {
 	resolved.Type = common.MountBind
 	resolved.Source = path
 	return resolved, nil
+}
+
+func (rt *Runtime) appendProotMountArgs(base []string, rootfs string, mounts []common.Mount) ([]string, error) {
+	args := append([]string(nil), base...)
+	cleanRootfs := filepath.Clean(rootfs)
+
+	for _, logical := range mounts {
+		mnt, err := rt.ResolveMount(logical)
+		if err != nil {
+			return nil, err
+		}
+		switch mnt.Type {
+		case common.MountBind:
+			if mnt.Source == "" || mnt.Target == "" {
+				continue
+			}
+			targetInRootfs, err := common.SecureJoin(cleanRootfs, mnt.Target)
+			if err != nil {
+				return nil, fmt.Errorf("resolve mount target %s: %w", mnt.Target, err)
+			}
+			if err := os.MkdirAll(targetInRootfs, 0755); err != nil {
+				return nil, fmt.Errorf("create mount target %s: %w", mnt.Target, err)
+			}
+			if mnt.ReadOnly {
+				slog.Warn("proot cannot enforce read-only bind mount; mounting read-write", "target", mnt.Target)
+			}
+			args = append(args, "-b", mnt.Source+":"+mnt.Target)
+		case common.MountTmpfs:
+			target, err := common.SecureJoin(cleanRootfs, mnt.Target)
+			if err != nil {
+				return nil, fmt.Errorf("resolve tmpfs target %s: %w", mnt.Target, err)
+			}
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return nil, fmt.Errorf("create tmpfs target %s: %w", mnt.Target, err)
+			}
+			args = append(args, "-b", target+":"+mnt.Target)
+		}
+	}
+	return args, nil
 }
