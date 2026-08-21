@@ -218,7 +218,7 @@ func writeFakeTool(t *testing.T, prefix, name string) {
 
 func TestNativeSourceBuilderUsesVendoredAndroidPatchesAndTermuxToolchain(t *testing.T) {
 	prefix := t.TempDir()
-	for _, tool := range []string{"tar", "patch", "env", "make", "clang"} {
+	for _, tool := range []string{"tar", "patch", "env", "make", "clang", "sh"} {
 		writeFakeTool(t, prefix, tool)
 	}
 	stage := t.TempDir()
@@ -247,7 +247,7 @@ func TestNativeSourceBuilderUsesVendoredAndroidPatchesAndTermuxToolchain(t *test
 			configureSeen = true
 			for _, required := range []string{
 				"USE_UNNAMED_POSIX_SEMAPHORES=1",
-				"ZIC=" + filepath.Join(stage, "src", "src", "timezone", "zic"),
+				filepath.Join(prefix, "bin", "sh") + " " + filepath.Join(stage, "src", "configure"),
 				"--with-icu",
 				"--with-libxml",
 				"--with-openssl",
@@ -255,6 +255,9 @@ func TestNativeSourceBuilderUsesVendoredAndroidPatchesAndTermuxToolchain(t *test
 				if !strings.Contains(joined, required) {
 					t.Fatalf("configure command missing %q: %s", required, joined)
 				}
+			}
+			if strings.Contains(joined, "ZIC=") {
+				t.Fatalf("on-device configure must not force cross-build ZIC: %s", joined)
 			}
 		}
 		if call.name == filepath.Join(prefix, "bin", "env") && strings.Contains(joined, filepath.Join(prefix, "bin", "make")+" -j2") {

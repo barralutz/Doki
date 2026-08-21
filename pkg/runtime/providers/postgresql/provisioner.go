@@ -252,7 +252,8 @@ func (b *nativeSourceBuilder) Build(ctx context.Context, archivePath, installDir
 	envBin := filepath.Join(termuxPrefix, "bin", "env")
 	makeBin := filepath.Join(termuxPrefix, "bin", "make")
 	clangBin := filepath.Join(termuxPrefix, "bin", "clang")
-	for _, bin := range []string{tarBin, patchBin, envBin, makeBin, clangBin} {
+	shBin := filepath.Join(termuxPrefix, "bin", "sh")
+	for _, bin := range []string{tarBin, patchBin, envBin, makeBin, clangBin, shBin} {
 		if info, err := os.Stat(bin); err != nil || info.IsDir() || info.Mode()&0111 == 0 {
 			return fmt.Errorf("required Termux build tool is unavailable: %s", bin)
 		}
@@ -273,17 +274,15 @@ func (b *nativeSourceBuilder) Build(ctx context.Context, archivePath, installDir
 		"PKG_CONFIG_PATH=" + filepath.Join(termuxPrefix, "lib", "pkgconfig") + ":" + filepath.Join(termuxPrefix, "share", "pkgconfig"),
 	}
 	configure := filepath.Join(srcDir, "configure")
-	zic := filepath.Join(srcDir, "src", "timezone", "zic")
 	configureArgs := append([]string{}, envArgs...)
 	configureArgs = append(configureArgs,
-		configure,
+		shBin, configure,
 		"--prefix="+installDir,
 		"--with-icu",
 		"--with-libxml",
 		"--with-openssl",
 		"--with-uuid=e2fs",
 		"USE_UNNAMED_POSIX_SEMAPHORES=1",
-		"ZIC="+zic,
 		"pgac_cv_prog_cc_LDFLAGS_EX_BE__Wl___export_dynamic=yes",
 		"pgac_cv_prog_cc_LDFLAGS__Wl___as_needed=yes",
 	)
