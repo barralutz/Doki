@@ -15,9 +15,10 @@ type runtimeProvisioner interface {
 }
 
 type Provider struct {
-	cacheRoot    string
-	termuxPrefix string
-	provisioner  runtimeProvisioner
+	cacheRoot     string
+	termuxPrefix  string
+	provisioner   runtimeProvisioner
+	clusterRunner clusterCommandRunner
 }
 
 type imageContract struct {
@@ -27,7 +28,7 @@ type imageContract struct {
 }
 
 func New(cacheRoot, termuxPrefix string) *Provider {
-	return &Provider{cacheRoot: cacheRoot, termuxPrefix: termuxPrefix, provisioner: newProvisioner(cacheRoot, termuxPrefix)}
+	return &Provider{cacheRoot: cacheRoot, termuxPrefix: termuxPrefix, provisioner: newProvisioner(cacheRoot, termuxPrefix), clusterRunner: execClusterRunner{}}
 }
 
 func (p *Provider) ID() string { return providerID }
