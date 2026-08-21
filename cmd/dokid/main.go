@@ -36,6 +36,7 @@ import (
 	"github.com/OpceanAI/Doki/pkg/netlink"
 	"github.com/OpceanAI/Doki/pkg/network"
 	dr "github.com/OpceanAI/Doki/pkg/runtime"
+	postgresql_provider "github.com/OpceanAI/Doki/pkg/runtime/providers/postgresql"
 	runners_chroot "github.com/OpceanAI/Doki/pkg/runtime/runners/chroot"
 	runners_fex "github.com/OpceanAI/Doki/pkg/runtime/runners/fex"
 	runners_gvisor "github.com/OpceanAI/Doki/pkg/runtime/runners/gvisor"
@@ -271,6 +272,10 @@ func main() {
 	}
 
 	androidProviders := dr.NewAndroidProviderRegistry()
+	if err := registerAndroidProvidersForOS(androidProviders, dataDir, termuxPrefix(), r.GOOS); err != nil {
+		logger.Error("register Android workload providers", "err", err)
+		os.Exit(1)
+	}
 	rt := dr.NewRuntime(execRoot, storeMgr,
 		dr.WithRegistry(registry),
 		dr.WithDNSAddr(dnsAddr),
@@ -412,6 +417,25 @@ func main() {
 	}
 	rootCancel()
 	logger.Info("dokid stopped")
+}
+
+func termuxPrefix() string {
+	prefix := strings.TrimSpace(os.Getenv("PREFIX"))
+	if filepath.IsAbs(prefix) {
+		return prefix
+	}
+	return "/data/data/com.termux/files/usr"
+}
+
+func registerAndroidProvidersForOS(reg *dr.AndroidProviderRegistry, dataDir, prefix, goos string) error {
+	if goos != "android" {
+		return nil
+	}
+	if reg == nil {
+		return fmt.Errorf("Android provider registry is nil")
+	}
+	provider := postgresql_provider.New(filepath.Join(dataDir, "providers", "postgresql"), prefix)
+	return reg.Register(provider)
 }
 
 // newLogger builds the structured logger based on -log-level and -log-format.
