@@ -570,9 +570,11 @@ Use this in:
 
 1. PRoot startup.
 2. namespace/FUSE `setupMounts`.
-3. legacy PRoot path.
+3. QEMU/PRoot fallback.
+4. PRoot `Exec`.
+5. PRoot `ExecAttach`.
 
-Do not persist the resolved physical path back to state.
+`Exec` and `ExecAttach` must use one shared `buildProotExecArgs(rootfs, mounts, workingDir, user, command)` helper so an interactive or non-interactive `docker exec` sees exactly the same named-volume bindings as the main container process. Do not persist the resolved physical path back to state.
 
 - [ ] **Step 4: Add namespace and missing-volume tests**
 
@@ -932,6 +934,7 @@ Do not begin the Android workload-provider framework until fresh evidence proves
 [ ] Android ARM64 dokid build succeeds
 [ ] docker compose can auto-create a named volume from HostConfig.Binds
 [ ] PRoot receives the resolved _data host path
+[ ] docker exec / docker compose exec rebuild PRoot with the same named-volume bindings
 [ ] logical volume name remains in persisted ContainerState.Config.Mounts
 [ ] volume data survives compose down/up
 [ ] compose down -v removes the backing volume directory
