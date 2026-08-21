@@ -716,7 +716,8 @@ func (s *Server) handleSwarmNoop(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleContainersList(w http.ResponseWriter, r *http.Request) {
-	all := r.URL.Query().Get("all") == "true"
+	allValue := r.URL.Query().Get("all")
+	all := allValue == "true" || allValue == "1"
 	filtersStr := r.URL.Query().Get("filters")
 
 	states, err := s.runtime.List()
@@ -1219,6 +1220,24 @@ func (s *Server) handleContainerInspect(w http.ResponseWriter, _ *http.Request, 
 		stateObj["FinishedAt"] = state.Finished.UTC().Format(time.RFC3339Nano)
 	}
 	m["State"] = stateObj
+
+	// Docker container inspect returns Created as an RFC3339 timestamp string.
+	// The list endpoint keeps the Unix timestamp from ContainerInfo, so rewrite
+	// this field only for inspect responses.
+	m["Created"] = state.Created.UTC().Format(time.RFC3339Nano)
+
+	// Docker Compose expects NetworkSettings to always be an object and
+	// dereferences its Networks field after container creation. Rootless/host
+	// networking may have no isolated network metadata, so expose an empty map
+	// instead of omitting the object.
+	networkSettings, ok := m["NetworkSettings"].(map[string]interface{})
+	if !ok || networkSettings == nil {
+		networkSettings = map[string]interface{}{}
+		m["NetworkSettings"] = networkSettings
+	}
+	if networks, ok := networkSettings["Networks"].(map[string]interface{}); !ok || networks == nil {
+		networkSettings["Networks"] = map[string]interface{}{}
+	}
 
 	// Ensure ImageID, ImageDigest, and Name are always present.
 	if state.Config != nil && state.Config.ImageDigest != "" {
@@ -2552,16 +2571,23 @@ func (s *Server) handleImageCreate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleImageDispatch(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/images/")
-	parts := strings.SplitN(path, "/", 2)
-	imageID := parts[0]
+	imageID := path
+	action := ""
 
-	var action string
-	if len(parts) > 1 {
-		action = parts[1]
+	// Image references may contain repository slashes (for example
+	// minio/minio:latest). Parse Docker's action from the path suffix instead
+	// of splitting on the first slash.
+	for _, candidate := range []string{"json", "history", "push", "tag", "verify"} {
+		suffix := "/" + candidate
+		if strings.HasSuffix(path, suffix) {
+			imageID = strings.TrimSuffix(path, suffix)
+			action = candidate
+			break
+		}
 	}
 
 	switch {
-	case action == "json" || (len(parts) == 1 && r.Method == "GET"):
+	case action == "json" || (action == "" && r.Method == "GET"):
 		s.handleImageInspect(w, r, imageID)
 	case action == "history" && r.Method == "GET":
 		s.handleImageHistory(w, r, imageID)
@@ -2571,7 +2597,7 @@ func (s *Server) handleImageDispatch(w http.ResponseWriter, r *http.Request) {
 		s.handleImageTag(w, r, imageID)
 	case action == "verify" && r.Method == "GET":
 		s.handleImageVerify(w, r, imageID)
-	case r.Method == "DELETE":
+	case action == "" && r.Method == "DELETE":
 		s.handleImageRemove(w, r, imageID)
 	default:
 		s.writeError(w, http.StatusNotFound, "no such image action")
@@ -2732,21 +2758,47 @@ func (s *Server) handleImagesSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
-	contextDir := r.URL.Query().Get("context")
-	if contextDir == "" {
-		s.writeError(w, http.StatusBadRequest, "context query parameter required")
+	allowedRoot := os.TempDir()
+	if s.config != nil && s.config.DataDir != "" {
+		allowedRoot = s.config.DataDir
+	}
+	if err := common.EnsureDir(allowedRoot); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "prepare build root: "+err.Error())
 		return
 	}
 
-	// Constrain the build context to a path inside the configured
-	// data directory. The previous implementation accepted any path
-	// the client sent, so a malicious request could read or build
-	// from /etc, $HOME, or another container's rootfs. We resolve
-	// symlinks before the prefix check to avoid trivial bypass.
-	allowedRoot := s.config.DataDir
-	if allowedRoot == "" {
-		allowedRoot = os.TempDir()
+	contextDir := r.URL.Query().Get("context")
+	var cleanupContext func()
+	if contextDir == "" {
+		// Docker Engine clients send the build context as a TAR stream in the
+		// request body. Extract it below DataDir so the same path confinement
+		// rules used for Doki's legacy ?context= form still apply.
+		buildRoot := filepath.Join(allowedRoot, "build-contexts")
+		if err := common.EnsureDir(buildRoot); err != nil {
+			s.writeError(w, http.StatusInternalServerError, "prepare build context root: "+err.Error())
+			return
+		}
+		tmpDir, err := os.MkdirTemp(buildRoot, "context-")
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "create build context: "+err.Error())
+			return
+		}
+		cleanupContext = func() { _ = os.RemoveAll(tmpDir) }
+		defer cleanupContext()
+
+		// Build contexts can be large, but still need an upper bound to avoid
+		// an unbounded upload filling the device. The image-load endpoint uses
+		// the same 8 GiB ceiling.
+		r.Body = http.MaxBytesReader(w, r.Body, 8<<30)
+		if err := builder.ExtractTar(r.Body, tmpDir); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid build context: "+err.Error())
+			return
+		}
+		contextDir = tmpDir
 	}
+
+	// Constrain the build context to a path inside the configured data
+	// directory. Resolve symlinks before the prefix check to avoid bypasses.
 	cleanCtx := filepath.Clean(contextDir)
 	realCtx, err := filepath.EvalSymlinks(cleanCtx)
 	if err == nil {
@@ -2771,13 +2823,31 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 	if ts := r.URL.Query()["t"]; len(ts) > 1 {
 		tags = ts
 	}
-	nocache := r.URL.Query().Get("nocache") == "true"
-	_ = r.URL.Query().Get("pull") == "true" // pull is always true during build
+
+	nocacheValue := r.URL.Query().Get("nocache")
+	nocache := nocacheValue == "true" || nocacheValue == "1"
+
 	buildArgs := make(map[string]string)
+	// Docker Engine API encodes build args as one JSON object in ?buildargs=.
+	if raw := r.URL.Query().Get("buildargs"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &buildArgs); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid buildargs: "+err.Error())
+			return
+		}
+	}
+	// Preserve Doki's older repeated ?buildarg=KEY=VALUE form.
 	for _, ba := range r.URL.Query()["buildarg"] {
 		k, v, ok := strings.Cut(ba, "=")
 		if ok {
 			buildArgs[k] = v
+		}
+	}
+
+	labels := make(map[string]string)
+	if raw := r.URL.Query().Get("labels"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid labels: "+err.Error())
+			return
 		}
 	}
 
@@ -2791,9 +2861,9 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reject traversal in the dockerfile name. A safe value is a
-	// bare filename; absolute paths are allowed but must also live
-	// inside the validated context directory.
+	// Reject traversal in the dockerfile name. A safe value is a bare
+	// filename; absolute paths are allowed only when they remain inside the
+	// validated context directory.
 	dockerfilePath := dockerfile
 	if !filepath.IsAbs(dockerfile) {
 		if strings.Contains(dockerfile, "..") {
@@ -2806,9 +2876,9 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 		if derr == nil {
 			dockerfilePath = realDP
 		}
-		if dockerfilePath != cleanRoot &&
-			!strings.HasPrefix(dockerfilePath, cleanRoot+string(os.PathSeparator)) {
-			s.writeError(w, http.StatusBadRequest, "dockerfile outside allowed directory")
+		if dockerfilePath != cleanCtx &&
+			!strings.HasPrefix(dockerfilePath, cleanCtx+string(os.PathSeparator)) {
+			s.writeError(w, http.StatusBadRequest, "dockerfile outside build context")
 			return
 		}
 	}
@@ -2832,7 +2902,6 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b := builder.NewBuilder(s.image)
-
 	target := r.URL.Query().Get("target")
 
 	buildCfg := &builder.BuildConfig{
@@ -2840,6 +2909,7 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 		Dokifile:  dockerfile,
 		Tags:      tags,
 		BuildArgs: buildArgs,
+		Labels:    labels,
 		Pull:      true,
 		NoCache:   nocache,
 		Target:    target,
@@ -3137,6 +3207,11 @@ func (s *Server) stateToInfo(state *dokiruntime.ContainerState) *common.Containe
 		status = "Exited (" + strconv.Itoa(state.ExitCode) + ")"
 	}
 
+	var labels map[string]string
+	if state.Config != nil {
+		labels = state.Config.Labels
+	}
+
 	info := &common.ContainerInfo{
 		ID:      state.ID,
 		Names:   []string{"/" + state.ID},
@@ -3146,7 +3221,7 @@ func (s *Server) stateToInfo(state *dokiruntime.ContainerState) *common.Containe
 		Status:  status,
 		Created: state.Created.Unix(),
 		Command: "",
-		Labels:  nil,
+		Labels:  labels,
 	}
 
 	// Show container name from annotations.
