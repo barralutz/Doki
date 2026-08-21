@@ -1,6 +1,10 @@
 package builder
 
 import (
+	"archive/tar"
+	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -310,5 +314,38 @@ func TestNewBuilder(t *testing.T) {
 	b := NewBuilder(nil)
 	if b == nil {
 		t.Fatal("NewBuilder returned nil")
+	}
+}
+
+func TestExtractTarDirectoryWithTrailingSlashDoesNotDuplicateBasename(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "foo/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
+		t.Fatalf("write dir header: %v", err)
+	}
+	content := []byte("ok\n")
+	if err := tw.WriteHeader(&tar.Header{Name: "foo/foo", Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(content))}); err != nil {
+		t.Fatalf("write file header: %v", err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := ExtractTar(bytes.NewReader(buf.Bytes()), dest); err != nil {
+		t.Fatalf("ExtractTar: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "foo", "foo"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("content = %q, want %q", got, content)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "foo", "foo", "foo")); err == nil {
+		t.Fatal("unexpected duplicated directory tree")
 	}
 }

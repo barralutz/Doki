@@ -1010,8 +1010,9 @@ func ExtractTar(r io.Reader, dest string) error {
 		if err != nil {
 			return err
 		}
-		lexical := filepath.Clean(filepath.Join(dest, hdr.Name))
-		if hdr.Name == "." || hdr.Name == "./" || lexical == cleanDest {
+		entryName := filepath.Clean(hdr.Name)
+		lexical := filepath.Clean(filepath.Join(dest, entryName))
+		if hdr.Name == "." || hdr.Name == "./" || entryName == "." || lexical == cleanDest {
 			continue
 		}
 		if !strings.HasPrefix(lexical, cleanDest+string(os.PathSeparator)) && lexical != cleanDest {
@@ -1025,7 +1026,6 @@ func ExtractTar(r io.Reader, dest string) error {
 		// lands at "a/b/b": one level too deep with its basename duplicated. Clean
 		// removes the slash. Same defect as pkg/runtime/runtime.go; see the longer
 		// note there.
-		entryName := filepath.Clean(hdr.Name)
 		parent, perr := common.SecureJoin(cleanDest, filepath.Dir(entryName))
 		if perr != nil {
 			return fmt.Errorf("tar: resolve %s: %w", hdr.Name, perr)
@@ -1100,8 +1100,21 @@ func ExtractTar(r io.Reader, dest string) error {
 			if err := os.Remove(target); err != nil {
 				slog.Warn("remove hardlink target failed", "path", target, "error", err)
 			}
+			// Android/rootless filesystems may reject hardlinks even when source and
+			// destination are in the same extracted rootfs. Match the runtime and
+			// distro extractors: preserve image contents by falling back to a copy.
 			if err := os.Link(linkTarget, target); err != nil {
-				return err
+				data, readErr := os.ReadFile(linkTarget)
+				if readErr != nil {
+					return fmt.Errorf("tar: hardlink %s: %w", hdr.Name, err)
+				}
+				_ = os.Remove(target)
+				if writeErr := os.WriteFile(target, data, 0644); writeErr != nil {
+					return fmt.Errorf("tar: hardlink copy fallback %s: %w", hdr.Name, writeErr)
+				}
+			}
+			if err := os.Chmod(target, os.FileMode(hdr.Mode&07777)); err != nil {
+				return fmt.Errorf("tar: chmod hardlink %s: %w", hdr.Name, err)
 			}
 		default:
 		}
