@@ -333,3 +333,30 @@ func TestStoreConfig(t *testing.T) {
 		t.Errorf("WorkingDir = %q, want /app", cfg.Config.WorkingDir)
 	}
 }
+
+func TestStoreGetTreatsDockerHubAliasesAsSameImage(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	record := &ImageRecord{
+		ID:       "sha256:dockerhubalias",
+		RepoTags: []string{"docker.io/library/alpine:latest"},
+	}
+	if err := store.SaveRecord(record); err != nil {
+		t.Fatalf("SaveRecord: %v", err)
+	}
+
+	for _, query := range []string{
+		"alpine:latest",
+		"registry-1.docker.io/library/alpine:latest",
+	} {
+		got, err := store.Get(query)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", query, err)
+		}
+		if got.ID != record.ID {
+			t.Fatalf("Get(%q) ID = %q, want %q", query, got.ID, record.ID)
+		}
+	}
+}

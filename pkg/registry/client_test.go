@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"net/http"
+	"runtime"
 	"testing"
 )
 
@@ -210,5 +212,35 @@ func TestPingInvalidRegistry(t *testing.T) {
 	err := client.Ping("invalid.registry.does.not.exist.example.com")
 	if err == nil {
 		t.Error("expected error for invalid registry")
+	}
+}
+
+func TestParseImageRefNormalizesDockerHubHostname(t *testing.T) {
+	ref, err := ParseImageRef("docker.io/library/alpine:latest")
+	if err != nil {
+		t.Fatalf("ParseImageRef: %v", err)
+	}
+	if ref.Registry != DefaultRegistry {
+		t.Fatalf("Registry = %q, want %q", ref.Registry, DefaultRegistry)
+	}
+	if ref.Name != "library/alpine" {
+		t.Fatalf("Name = %q, want %q", ref.Name, "library/alpine")
+	}
+	if ref.Tag != "latest" {
+		t.Fatalf("Tag = %q, want latest", ref.Tag)
+	}
+}
+
+func TestNewClientUsesExplicitDNSDialerOnAndroid(t *testing.T) {
+	if runtime.GOOS != "android" {
+		t.Skip("android-specific resolver behavior")
+	}
+	client := NewClient(false)
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("android registry transport DialContext is nil; static Android Go resolver falls back to localhost DNS")
 	}
 }

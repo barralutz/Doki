@@ -72,6 +72,19 @@ func NewClient(insecure bool) *Client {
 		DisableCompression:  false,
 	}
 
+	// Static Go binaries on Android cannot use the platform DNS resolver.
+	// Go therefore falls back to localhost:53, which Termux cannot bind
+	// rootlessly. Route registry lookups through Doki's rootless DNS proxy.
+	if runtime.GOOS == "android" {
+		resolver := &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, "127.0.0.11:8053")
+			},
+		}
+		transport.DialContext = (&net.Dialer{Resolver: resolver}).DialContext
+	}
+
 	return &Client{
 		httpClient: &http.Client{
 			Transport: transport,
@@ -128,6 +141,10 @@ func ParseImageRef(ref string) (*ImageRef, error) {
 		}
 		ir.Registry = parts[0]
 		ir.Name = parts[1] + "/" + parts[2]
+	}
+
+	if ir.Registry == "docker.io" || ir.Registry == "index.docker.io" {
+		ir.Registry = DefaultRegistry
 	}
 
 	return ir, nil

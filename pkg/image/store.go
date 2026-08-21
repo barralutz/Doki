@@ -297,6 +297,17 @@ func normalizeRepoTag(ref string) string {
 	return ref
 }
 
+// canonicalRepoTag maps equivalent Docker Hub spellings to one canonical
+// registry/name:tag form for local lookup while preserving private registries.
+func canonicalRepoTag(ref string) string {
+	normalized := normalizeRepoTag(ref)
+	parsed, err := registry.ParseImageRef(normalized)
+	if err != nil {
+		return normalized
+	}
+	return parsed.String()
+}
+
 // validateManifestDigests rejects any manifest whose config or layer digests
 // are not strictly formed. Must be called on every pull path before the
 // digests are used to build filesystem paths (CRIT-1).
@@ -449,9 +460,10 @@ func (s *Store) Get(idOrTag string) (*ImageRecord, error) {
 	// Normalize the query the same way stored tags are ("busybox" → "busybox:latest")
 	// so a bare-name lookup matches an image saved with an explicit :latest tag.
 	needle := normalizeRepoTag(idOrTag)
+	canonicalNeedle := canonicalRepoTag(idOrTag)
 	for _, record := range records {
 		for _, tag := range record.RepoTags {
-			if tag == idOrTag || tag == needle {
+			if tag == idOrTag || tag == needle || canonicalRepoTag(tag) == canonicalNeedle {
 				rec := record // copy the loop variable
 				return &rec, nil
 			}
