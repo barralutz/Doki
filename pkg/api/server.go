@@ -100,19 +100,7 @@ func (s *Server) rebuildHandler() {
 }
 
 func (s *Server) handleVolumesPrune(w http.ResponseWriter, _ *http.Request) {
-	// Build list of volumes referenced by running containers.
-	referencedVolumes := make(map[string]bool)
-	if containers, err := s.runtime.List(); err == nil {
-		for _, c := range containers {
-			if c.Status == common.StateRunning && c.Config != nil {
-				for _, mnt := range c.Config.Mounts {
-					if mnt.Type == common.MountVolume {
-						referencedVolumes[mnt.Source] = true
-					}
-				}
-			}
-		}
-	}
+	referencedVolumes := s.referencedVolumeNames()
 	pruned, err := s.volumes.Prune(referencedVolumes)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
@@ -3000,11 +2988,10 @@ func (s *Server) handleVolumeDispatch(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeJSON(w, http.StatusOK, vol)
 	case r.Method == "DELETE":
-		// D6: refuse to remove a volume still mounted by a container unless
-		// ?force=true. Silently removing an in-use volume corrupts the running
-		// containers that depend on it.
-		force := r.URL.Query().Get("force") == "true" || r.URL.Query().Get("force") == "1"
-		if !force && s.volumeInUse(name) {
+		// A retained container state still owns its named-volume reference even
+		// when stopped/exited. Doki does not yet have a safe detach-and-rewrite
+		// path, so force removal of referenced backing data remains a conflict.
+		if s.volumeInUse(name) {
 			s.writeError(w, http.StatusConflict, "volume is in use")
 			return
 		}
@@ -3018,23 +3005,28 @@ func (s *Server) handleVolumeDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// volumeInUse reports whether any container currently mounts the named volume.
-func (s *Server) volumeInUse(name string) bool {
+func (s *Server) referencedVolumeNames() map[string]bool {
+	refs := make(map[string]bool)
 	states, err := s.runtime.List()
 	if err != nil {
-		return false
+		return refs
 	}
 	for _, st := range states {
 		if st.Config == nil {
 			continue
 		}
 		for _, m := range st.Config.Mounts {
-			if m.Type == common.MountVolume && m.Source == name {
-				return true
+			if m.Type == common.MountVolume && m.Source != "" {
+				refs[m.Source] = true
 			}
 		}
 	}
-	return false
+	return refs
+}
+
+// volumeInUse reports whether any retained container state references the named volume.
+func (s *Server) volumeInUse(name string) bool {
+	return s.referencedVolumeNames()[name]
 }
 
 func (s *Server) stateToInfo(state *dokiruntime.ContainerState) *common.ContainerInfo {

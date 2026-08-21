@@ -144,3 +144,68 @@ func TestNewServerUsesInjectedVolumeManager(t *testing.T) {
 		t.Fatal("NewServer did not retain the injected volume manager instance")
 	}
 }
+
+func newExitedContainerReferencingVolume(t *testing.T, rt *dokiruntime.Runtime, name string) {
+	t.Helper()
+	state := &dokiruntime.ContainerState{
+		ID:      "exited-volume-ref",
+		Status:  common.StateExited,
+		Created: time.Now().UTC(),
+		Config: &dokiruntime.Config{Mounts: []common.Mount{{
+			Type:   common.MountVolume,
+			Source: name,
+			Target: "/data",
+		}}},
+	}
+	if err := rt.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVolumesPrunePreservesVolumeReferencedByExitedContainer(t *testing.T) {
+	root := t.TempDir()
+	rt := dokiruntime.NewRuntime(filepath.Join(root, "runtime"), nil)
+	vm, err := volume.NewManager(filepath.Join(root, "volumes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.Create("db", "local", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	newExitedContainerReferencingVolume(t, rt, "db")
+	s := &Server{runtime: rt, volumes: vm}
+
+	req := httptest.NewRequest(http.MethodPost, "/volumes/prune", nil)
+	rr := httptest.NewRecorder()
+	s.handleVolumesPrune(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if _, err := vm.Get("db"); err != nil {
+		t.Fatalf("prune deleted volume referenced by exited container: %v", err)
+	}
+}
+
+func TestVolumeDeleteForceRejectsReferencedVolume(t *testing.T) {
+	root := t.TempDir()
+	rt := dokiruntime.NewRuntime(filepath.Join(root, "runtime"), nil)
+	vm, err := volume.NewManager(filepath.Join(root, "volumes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.Create("db", "local", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	newExitedContainerReferencingVolume(t, rt, "db")
+	s := &Server{runtime: rt, volumes: vm}
+
+	req := httptest.NewRequest(http.MethodDelete, "/volumes/db?force=true", nil)
+	rr := httptest.NewRecorder()
+	s.handleVolumeDispatch(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+	if _, err := vm.Get("db"); err != nil {
+		t.Fatalf("force delete removed referenced volume: %v", err)
+	}
+}
