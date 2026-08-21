@@ -78,7 +78,58 @@ func (m *Manager) loadFromDisk() error {
 			slog.Warn("skip invalid volume name", "path", volPath, "name", vol.Name)
 			continue
 		}
+
+		volDir := filepath.Clean(m.volumeDir(vol.Name))
+		dataDir := filepath.Clean(m.dataDir(vol.Name))
+		mountpoint := filepath.Clean(vol.Mountpoint)
+		switch mountpoint {
+		case ".", "", volDir:
+			if err := m.migrateLegacyVolume(vol.Name, &vol); err != nil {
+				return err
+			}
+		case dataDir:
+			if err := common.EnsureDir(dataDir); err != nil {
+				return fmt.Errorf("ensure volume data directory %s: %w", dataDir, err)
+			}
+		default:
+			return fmt.Errorf("invalid volume metadata %q: mountpoint %q is outside managed data directory %q", vol.Name, vol.Mountpoint, dataDir)
+		}
 		m.volumes[vol.Name] = &vol
+	}
+	return nil
+}
+
+func (m *Manager) migrateLegacyVolume(name string, info *common.VolumeInfo) error {
+	volDir := m.volumeDir(name)
+	dataDir := m.dataDir(name)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("create migrated volume data directory %s: %w", dataDir, err)
+	}
+
+	entries, err := os.ReadDir(volDir)
+	if err != nil {
+		return fmt.Errorf("read legacy volume %s: %w", name, err)
+	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "volume.json", "volume.json.tmp", "_data":
+			continue
+		}
+		src := filepath.Join(volDir, entry.Name())
+		dst := filepath.Join(dataDir, entry.Name())
+		if _, err := os.Lstat(dst); err == nil {
+			return fmt.Errorf("ambiguous legacy volume migration %q: both %s and %s exist", name, src, dst)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect migrated volume destination %s: %w", dst, err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("migrate legacy volume entry %s to %s: %w", src, dst, err)
+		}
+	}
+
+	info.Mountpoint = dataDir
+	if err := writeMetadataAtomic(m.metadataPath(name), info); err != nil {
+		return fmt.Errorf("persist migrated volume %s: %w", name, err)
 	}
 	return nil
 }
