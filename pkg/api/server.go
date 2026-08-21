@@ -29,6 +29,7 @@ import (
 	"github.com/OpceanAI/Doki/pkg/podman"
 	dokiruntime "github.com/OpceanAI/Doki/pkg/runtime"
 	"github.com/OpceanAI/Doki/pkg/stdcopy"
+	"github.com/OpceanAI/Doki/pkg/volume"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,7 +49,7 @@ type Server struct {
 	runtime    *dokiruntime.Runtime
 	image      *image.Store
 	network    *network.Manager
-	volumes    *VolumeManager
+	volumes    *volume.Manager
 	events     *events.Bus
 	middleware []func(http.Handler) http.Handler
 	handler    http.Handler
@@ -98,164 +99,6 @@ func (s *Server) rebuildHandler() {
 	s.handler = h
 }
 
-// VolumeManager manages Docker-compatible volumes.
-type VolumeManager struct {
-	mu      sync.RWMutex
-	root    string
-	volumes map[string]*common.VolumeInfo
-}
-
-// NewVolumeManager creates a new volume manager.
-func NewVolumeManager(root string) (*VolumeManager, error) {
-	if err := common.EnsureDir(root); err != nil {
-		return nil, fmt.Errorf("create volume root: %w", err)
-	}
-	vm := &VolumeManager{
-		root:    root,
-		volumes: make(map[string]*common.VolumeInfo),
-	}
-	if err := vm.loadFromDisk(); err != nil {
-		return nil, err
-	}
-	return vm, nil
-}
-
-func validateVolumeName(name string) bool {
-	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") || strings.Contains(name, string(os.PathSeparator)) {
-		return false
-	}
-	return true
-}
-
-func (vm *VolumeManager) loadFromDisk() error {
-	entries, err := os.ReadDir(vm.root)
-	if err != nil {
-		return fmt.Errorf("read volume root: %w", err)
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		volPath := filepath.Join(vm.root, entry.Name(), "volume.json")
-		data, err := os.ReadFile(volPath)
-		if err != nil {
-			slog.Warn("skip unreadable volume metadata", "path", volPath, "err", err)
-			continue
-		}
-		var vol common.VolumeInfo
-		if err := json.Unmarshal(data, &vol); err != nil {
-			slog.Warn("skip invalid volume metadata", "path", volPath, "err", err)
-			continue
-		}
-		if !validateVolumeName(vol.Name) {
-			slog.Warn("skip invalid volume name", "path", volPath, "name", vol.Name)
-			continue
-		}
-		vm.volumes[vol.Name] = &vol
-	}
-	return nil
-}
-
-func (vm *VolumeManager) Create(name string, driver string, opts map[string]string, labels map[string]string) (*common.VolumeInfo, error) {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	if !validateVolumeName(name) {
-		return nil, fmt.Errorf("invalid volume name: %q contains path traversal characters", name)
-	}
-
-	if _, exists := vm.volumes[name]; exists {
-		return nil, common.NewErrConflict("volume", name)
-	}
-
-	mountpoint := filepath.Join(vm.root, name)
-	if err := common.EnsureDir(mountpoint); err != nil {
-		return nil, fmt.Errorf("create volume directory: %w", err)
-	}
-
-	if driver == "" {
-		driver = "local"
-	}
-
-	vol := &common.VolumeInfo{
-		Name:       name,
-		Driver:     driver,
-		Mountpoint: mountpoint,
-		Labels:     labels,
-		Scope:      "local",
-		Options:    opts,
-		CreatedAt:  time.Now(),
-	}
-
-	// Persist to disk.
-	data, err := json.Marshal(vol)
-	if err != nil {
-		return nil, fmt.Errorf("marshal volume metadata: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(mountpoint, "volume.json"), data, 0644); err != nil {
-		return nil, fmt.Errorf("write volume metadata: %w", err)
-	}
-
-	vm.volumes[name] = vol
-	return vol, nil
-}
-
-func (vm *VolumeManager) Get(name string) (*common.VolumeInfo, error) {
-	vm.mu.RLock()
-	defer vm.mu.RUnlock()
-
-	vol, ok := vm.volumes[name]
-	if !ok {
-		return nil, common.NewErrNotFound("volume", name)
-	}
-	return vol, nil
-}
-
-func (vm *VolumeManager) List() []*common.VolumeInfo {
-	vm.mu.RLock()
-	defer vm.mu.RUnlock()
-
-	vols := make([]*common.VolumeInfo, 0, len(vm.volumes))
-	for _, v := range vm.volumes {
-		vols = append(vols, v)
-	}
-	return vols
-}
-
-func (vm *VolumeManager) Remove(name string) error {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	vol, ok := vm.volumes[name]
-	if !ok {
-		return common.NewErrNotFound("volume", name)
-	}
-
-	if err := os.RemoveAll(vol.Mountpoint); err != nil {
-		return fmt.Errorf("remove volume data: %w", err)
-	}
-	delete(vm.volumes, name)
-	return nil
-}
-
-func (vm *VolumeManager) Prune(referencedVolumes map[string]bool) ([]string, error) {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	var pruned []string
-	for name, vol := range vm.volumes {
-		if referencedVolumes[name] {
-			continue
-		}
-		if err := os.RemoveAll(vol.Mountpoint); err != nil {
-			return pruned, fmt.Errorf("remove volume %s: %w", name, err)
-		}
-		delete(vm.volumes, name)
-		pruned = append(pruned, name)
-	}
-	return pruned, nil
-}
-
 func (s *Server) handleVolumesPrune(w http.ResponseWriter, _ *http.Request) {
 	// Build list of volumes referenced by running containers.
 	referencedVolumes := make(map[string]bool)
@@ -286,7 +129,7 @@ func (s *Server) handleVolumesPrune(w http.ResponseWriter, _ *http.Request) {
 
 // NewServer creates a new API server.
 func NewServer(config *common.DokiConfig, rt *dokiruntime.Runtime, img *image.Store, net *network.Manager) (*Server, error) {
-	volumes, err := NewVolumeManager(filepath.Join(config.DataDir, "volumes"))
+	volumes, err := volume.NewManager(filepath.Join(config.DataDir, "volumes"))
 	if err != nil {
 		return nil, fmt.Errorf("volume manager: %w", err)
 	}

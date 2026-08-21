@@ -14,6 +14,7 @@ import (
 	"github.com/OpceanAI/Doki/pkg/common"
 	"github.com/OpceanAI/Doki/pkg/image"
 	dokiruntime "github.com/OpceanAI/Doki/pkg/runtime"
+	"github.com/OpceanAI/Doki/pkg/volume"
 )
 
 func TestVolumeManagerSkipsBadMetadata(t *testing.T) {
@@ -38,7 +39,7 @@ func TestVolumeManagerSkipsBadMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	vm, err := NewVolumeManager(root)
+	vm, err := volume.NewManager(root)
 	if err != nil {
 		t.Fatalf("NewVolumeManager() error = %v", err)
 	}
@@ -51,7 +52,7 @@ func TestVolumeManagerSkipsBadMetadata(t *testing.T) {
 }
 
 func TestVolumeManagerCreateRemove(t *testing.T) {
-	vm, err := NewVolumeManager(t.TempDir())
+	vm, err := volume.NewManager(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func TestVolumeManagerCreateRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(vol.Mountpoint, "volume.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(vol.Mountpoint), "volume.json")); err != nil {
 		t.Fatalf("volume metadata missing: %v", err)
 	}
 	if err := vm.Remove("data"); err != nil {
