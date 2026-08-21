@@ -907,3 +907,30 @@ Do not implement the PostgreSQL provider until fresh evidence proves:
 [ ] Phase 1 Compose named-volume conformance still passes on-device
 [ ] feature branch is pushed and local/remote SHA match
 ```
+
+---
+
+## Verification Record — 2026-08-21 Task 7/8
+
+Fresh verification executed on MCP2 node `android-freecad` inside Debian/PRoot:
+
+```text
+TestAndroidNativeDeleteCallsProviderCleanup: PASS
+TestAndroidNativeStopKillUsePersistedPID: PASS
+TestAndroidNativeRestartUsesPersistedProviderID: PASS
+TestAndroidProviderIntegrationLifecycleSurvivesRuntimeReload: PASS
+TestAndroidProviderIntegrationNoProviderKeepsLegacyExtraction: PASS
+/root/go1.27/bin/go test ./pkg/runtime -count=1: PASS
+/root/go1.27/bin/go test ./... -count=1: PASS
+git diff --check: PASS
+```
+
+Android ARM64 build gate:
+
+```text
+GOOS=android GOARCH=arm64 CGO_ENABLED=0 /root/go1.27/bin/go build -o /root/doki-build/dokid-android-arm64-provider-framework ./cmd/dokid: PASS
+SHA256: 0e001be5b7a86b868c0ed41518b1ccb5392fcf1adb85d683ef997ff765666ee3
+Size: 26211280 bytes
+```
+
+The native Termux daemon smoke test, Phase 1 named-volume conformance rerun, push, and local/remote SHA comparison remain pending until the user restarts `dokid` natively from Termux.
