@@ -112,3 +112,102 @@ func TestSetupMountsRejectsMissingNamedVolume(t *testing.T) {
 		t.Fatalf("setupMounts error = %v, want missing named-volume resolution error", err)
 	}
 }
+
+func TestPrepareNamedVolumesSeedsEmptyVolumeFromImage(t *testing.T) {
+	rootfs := t.TempDir()
+	target := filepath.Join(rootfs, "etc", "demo")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "default.conf"), []byte("seeded\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	volumeData := filepath.Join(t.TempDir(), "db", "_data")
+	if err := os.MkdirAll(volumeData, 0755); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{"db": volumeData}))
+	mounts := []common.Mount{{Type: common.MountVolume, Source: "db", Target: "/etc/demo"}}
+
+	if err := rt.prepareNamedVolumes(rootfs, mounts); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(volumeData, "default.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "seeded\n" {
+		t.Fatalf("seeded content = %q", got)
+	}
+	st, err := os.Stat(filepath.Join(volumeData, "default.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0640 {
+		t.Fatalf("seeded mode = %o, want 640", st.Mode().Perm())
+	}
+}
+
+func TestPrepareNamedVolumesHonorsNoCopy(t *testing.T) {
+	rootfs := t.TempDir()
+	target := filepath.Join(rootfs, "data")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "seed.txt"), []byte("seed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	volumeData := filepath.Join(t.TempDir(), "db", "_data")
+	if err := os.MkdirAll(volumeData, 0755); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{"db": volumeData}))
+	mounts := []common.Mount{{
+		Type:          common.MountVolume,
+		Source:        "db",
+		Target:        "/data",
+		VolumeOptions: &common.VolumeOptions{NoCopy: true},
+	}}
+
+	if err := rt.prepareNamedVolumes(rootfs, mounts); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(volumeData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("NoCopy volume entries = %v, want empty", entries)
+	}
+}
+
+func TestPrepareNamedVolumesDoesNotSeedNonEmptyVolume(t *testing.T) {
+	rootfs := t.TempDir()
+	target := filepath.Join(rootfs, "data")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "seed.txt"), []byte("image"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	volumeData := filepath.Join(t.TempDir(), "db", "_data")
+	if err := os.MkdirAll(volumeData, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(volumeData, "existing.txt"), []byte("persisted"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{"db": volumeData}))
+
+	if err := rt.prepareNamedVolumes(rootfs, []common.Mount{{Type: common.MountVolume, Source: "db", Target: "/data"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(volumeData, "seed.txt")); !os.IsNotExist(err) {
+		t.Fatalf("seed.txt was copied into non-empty volume: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(volumeData, "existing.txt"))
+	if err != nil || string(got) != "persisted" {
+		t.Fatalf("existing data changed: %q err=%v", got, err)
+	}
+}
