@@ -10,11 +10,14 @@ import "strings"
 // Both the Docker and the libpod surfaces call this so the two can never drift
 // into resolving the same image to different commands.
 func BuildCommand(reqEntrypoint, reqCmd []string, img *ImageOCIConfig) []string {
-	cmd := reqCmd
-	entrypoint := reqEntrypoint
+	cmd := append([]string{}, reqCmd...)
+	entrypoint := append([]string{}, reqEntrypoint...)
 
+	if len(cmd) == 0 && img != nil && len(img.Cmd) > 0 {
+		cmd = append(cmd, img.Cmd...)
+	}
 	if len(entrypoint) == 0 && img != nil {
-		entrypoint = img.Entrypoint
+		entrypoint = append(entrypoint, img.Entrypoint...)
 	}
 
 	// Shell-form entrypoint: a single string carrying spaces or shell operators
@@ -34,9 +37,6 @@ func BuildCommand(reqEntrypoint, reqCmd []string, img *ImageOCIConfig) []string 
 
 	if len(entrypoint) > 0 {
 		cmd = append(append([]string{}, entrypoint...), cmd...)
-	}
-	if len(cmd) == 0 && img != nil && len(img.Cmd) > 0 {
-		cmd = append(cmd, img.Cmd...)
 	}
 	if len(cmd) == 0 {
 		cmd = []string{"/bin/sh"}
