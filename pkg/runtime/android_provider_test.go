@@ -11,22 +11,70 @@ import (
 )
 
 type fakeAndroidProvider struct {
-	id    string
-	match ProviderMatch
+	id               string
+	match            ProviderMatch
+	ensureErr        error
+	prepareErr       error
+	prepareExecErr   error
+	cleanupErr       error
+	prepared         *PreparedWorkload
+	preparedExec     *PreparedExec
+	ensureCalls      int
+	prepareCalls     int
+	prepareExecCalls int
+	cleanupCalls     int
+	lastDescriptor   WorkloadDescriptor
+	lastExec         *ExecConfig
 }
 
 func (f *fakeAndroidProvider) ID() string { return f.id }
 func (f *fakeAndroidProvider) Match(context.Context, WorkloadDescriptor) ProviderMatch {
 	return f.match
 }
-func (f *fakeAndroidProvider) Ensure(context.Context, WorkloadDescriptor) error { return nil }
-func (f *fakeAndroidProvider) Prepare(context.Context, WorkloadDescriptor) (*PreparedWorkload, error) {
+func (f *fakeAndroidProvider) Ensure(_ context.Context, desc WorkloadDescriptor) error {
+	f.ensureCalls++
+	f.lastDescriptor = desc
+	return f.ensureErr
+}
+func (f *fakeAndroidProvider) Prepare(_ context.Context, desc WorkloadDescriptor) (*PreparedWorkload, error) {
+	f.prepareCalls++
+	f.lastDescriptor = desc
+	if f.prepareErr != nil {
+		return nil, f.prepareErr
+	}
+	if f.prepared != nil {
+		cp := *f.prepared
+		cp.Args = append([]string(nil), f.prepared.Args...)
+		cp.Env = append([]string(nil), f.prepared.Env...)
+		return &cp, nil
+	}
 	return &PreparedWorkload{}, nil
 }
-func (f *fakeAndroidProvider) PrepareExec(context.Context, WorkloadDescriptor, *ExecConfig) (*PreparedExec, error) {
+func (f *fakeAndroidProvider) PrepareExec(_ context.Context, desc WorkloadDescriptor, cfg *ExecConfig) (*PreparedExec, error) {
+	f.prepareExecCalls++
+	f.lastDescriptor = desc
+	if cfg != nil {
+		cp := *cfg
+		cp.Args = append([]string(nil), cfg.Args...)
+		cp.Env = append([]string(nil), cfg.Env...)
+		f.lastExec = &cp
+	}
+	if f.prepareExecErr != nil {
+		return nil, f.prepareExecErr
+	}
+	if f.preparedExec != nil {
+		cp := *f.preparedExec
+		cp.Args = append([]string(nil), f.preparedExec.Args...)
+		cp.Env = append([]string(nil), f.preparedExec.Env...)
+		return &cp, nil
+	}
 	return &PreparedExec{}, nil
 }
-func (f *fakeAndroidProvider) Cleanup(context.Context, WorkloadDescriptor) error { return nil }
+func (f *fakeAndroidProvider) Cleanup(_ context.Context, desc WorkloadDescriptor) error {
+	f.cleanupCalls++
+	f.lastDescriptor = desc
+	return f.cleanupErr
+}
 
 func TestAndroidProviderRegistrySelectRequired(t *testing.T) {
 	reg := NewAndroidProviderRegistry()

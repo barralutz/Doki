@@ -931,15 +931,17 @@ func (rt *Runtime) Start(id string) error {
 	// Docker seeds a newly created empty named volume from image data at the
 	// mount destination unless NoCopy was requested. This must happen before
 	// any bind mount obscures the image path.
-	if err := rt.prepareNamedVolumes(rootfsDir, cfg.Mounts); err != nil {
-		if cerr := logFile.Close(); cerr != nil {
-			slog.Warn("close failed", "error", cerr)
+	if state.Mode != ModeAndroidNative {
+		if err := rt.prepareNamedVolumes(rootfsDir, cfg.Mounts); err != nil {
+			if cerr := logFile.Close(); cerr != nil {
+				slog.Warn("close failed", "error", cerr)
+			}
+			return fmt.Errorf("prepare named volumes: %w", err)
 		}
-		return fmt.Errorf("prepare named volumes: %w", err)
 	}
 
 	// Setup mounts (only in namespace mode).
-	if rt.mode == ModeNamespaces {
+	if state.Mode == ModeNamespaces {
 		if err := rt.setupMounts(rootfsDir, cfg); err != nil {
 			if cerr := logFile.Close(); cerr != nil {
 				slog.Warn("close failed", "error", cerr)
@@ -953,7 +955,7 @@ func (rt *Runtime) Start(id string) error {
 		for _, bin := range []string{"/sbin/tini", "/usr/bin/dumb-init"} {
 			hostBin := filepath.Join(rootfsDir, bin)
 			if _, err := os.Stat(hostBin); err == nil {
-				if rt.mode == ModeNative {
+				if state.Mode == ModeNative {
 					cfg.Args = append([]string{hostBin, "--"}, cfg.Args...)
 				} else {
 					cfg.Args = append([]string{bin, "--"}, cfg.Args...)
@@ -964,7 +966,7 @@ func (rt *Runtime) Start(id string) error {
 	}
 
 	// Start process.
-	pid, proc, err := rt.startProcess(cfg, rootfsDir, logFile)
+	pid, proc, err := rt.startProcess(state.Mode, state, cfg, rootfsDir, logFile)
 	if err != nil {
 		if cerr := logFile.Close(); cerr != nil {
 			slog.Warn("close failed", "error", cerr)
@@ -1144,8 +1146,10 @@ func (rt *Runtime) handleRestart(state *ContainerState, exitCode int) {
 // ─── 3 execution modes ─────────────────────────────────────────────
 
 // startProcess selects the appropriate execution mode.
-func (rt *Runtime) startProcess(cfg *Config, rootfsDir string, logFile *os.File) (int, *exec.Cmd, error) {
-	switch rt.mode {
+func (rt *Runtime) startProcess(mode ExecutionMode, state *ContainerState, cfg *Config, rootfsDir string, logFile *os.File) (int, *exec.Cmd, error) {
+	switch mode {
+	case ModeAndroidNative:
+		return rt.startAndroidNative(state, logFile)
 	case ModeMicroVM:
 		return rt.startWithMicroVM(cfg, rootfsDir, logFile)
 	case ModeProot:
