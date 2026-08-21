@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,4 +128,87 @@ func TestAndroidNativeStartRejectsMissingProviderRelativeExecutableAndEnsureFail
 			t.Fatalf("prepare called after ensure failure")
 		}
 	})
+}
+
+func newRunningAndroidProviderRuntime(t *testing.T, provider *fakeAndroidProvider) (*Runtime, *ContainerState) {
+	t.Helper()
+	reg := NewAndroidProviderRegistry()
+	if err := reg.Register(provider); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+	state, err := rt.Create(&Config{ID: "exec-native", ImageRef: "example:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Start(state.ID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Kill(state.ID, 9) })
+	return rt, state
+}
+
+func TestAndroidNativeExecUsesProvider(t *testing.T) {
+	p := &fakeAndroidProvider{
+		id: "fake", match: ProviderMatch{Matched: true, Required: true},
+		prepared:     &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		preparedExec: &PreparedExec{Executable: "/bin/sh", Args: []string{"-c", "printf ready"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	rt, state := newRunningAndroidProviderRuntime(t, p)
+	stdout, stderr, err := rt.Exec(state.ID, []string{"probe", "--ready"}, []string{"X=1"}, "/work", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stdout) != "ready" || len(stderr) != 0 {
+		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+	if p.prepareExecCalls != 1 || p.lastExec == nil || len(p.lastExec.Args) != 2 || p.lastExec.Args[0] != "probe" || p.lastExec.Args[1] != "--ready" {
+		t.Fatalf("prepareExecCalls=%d lastExec=%+v", p.prepareExecCalls, p.lastExec)
+	}
+}
+
+func TestAndroidNativeExecAttachStreamsStdinAndStdout(t *testing.T) {
+	p := &fakeAndroidProvider{
+		id: "fake", match: ProviderMatch{Matched: true, Required: true},
+		prepared:     &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		preparedExec: &PreparedExec{Executable: "/bin/sh", Args: []string{"-c", `read line; printf 'got:%s' "$line"`}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	rt, state := newRunningAndroidProviderRuntime(t, p)
+	res, err := rt.ExecAttach(state.ID, []string{"echo-through-provider"}, nil, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.Stdin.Write([]byte("hello\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := res.Stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(res.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "got:hello" {
+		t.Fatalf("stdout=%q", out)
+	}
+}
+
+func TestAndroidNativeHealthcheckUsesProviderExec(t *testing.T) {
+	p := &fakeAndroidProvider{
+		id: "fake", match: ProviderMatch{Matched: true, Required: true},
+		prepared:     &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		preparedExec: &PreparedExec{Executable: "/bin/sh", Args: []string{"-c", "printf healthy"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	rt, state := newRunningAndroidProviderRuntime(t, p)
+	hc := NewHealthChecker(rt, state.ID, &HealthCheckConfig{Test: []string{"CMD", "provider-health"}, Timeout: time.Second})
+	code, output := hc.runProbe([]string{"provider-health"}, time.Second)
+	if code != 0 || output != "healthy" {
+		t.Fatalf("code=%d output=%q", code, output)
+	}
+	if p.lastExec == nil || len(p.lastExec.Args) != 1 || p.lastExec.Args[0] != "provider-health" {
+		t.Fatalf("lastExec=%+v", p.lastExec)
+	}
 }

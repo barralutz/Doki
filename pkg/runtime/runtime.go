@@ -1553,6 +1553,10 @@ func (rt *Runtime) Exec(id string, args []string, env []string, workingDir, user
 	if state.Status != common.StateRunning {
 		return nil, nil, fmt.Errorf("container %s is not running", id)
 	}
+	if state.Mode == ModeAndroidNative {
+		execCfg := &ExecConfig{ContainerID: state.ID, Args: append([]string(nil), args...), Env: append([]string(nil), env...), WorkingDir: workingDir, User: user}
+		return rt.execAndroidNative(state, execCfg)
+	}
 
 	// Find the container's rootfs.
 	rootfsDir := ""
@@ -1563,7 +1567,7 @@ func (rt *Runtime) Exec(id string, args []string, env []string, workingDir, user
 		rootfsDir = filepath.Join(state.Bundle, "rootfs")
 	}
 
-	switch rt.mode {
+	switch state.Mode {
 	case ModeProot:
 		if rootfsDir == "" || !common.PathExists(rootfsDir) {
 			return nil, nil, fmt.Errorf("rootfs not found for container %s", id)
@@ -1685,6 +1689,10 @@ func (rt *Runtime) ExecAttach(containerID string, args []string, env []string, w
 	if state.Status != common.StateRunning {
 		return nil, fmt.Errorf("container %s is not running", containerID)
 	}
+	if state.Mode == ModeAndroidNative {
+		execCfg := &ExecConfig{ContainerID: state.ID, Args: append([]string(nil), args...), Env: append([]string(nil), env...), WorkingDir: workingDir, User: user, Tty: tty}
+		return rt.execAttachAndroidNative(state, execCfg)
+	}
 
 	rootfsDir := ""
 	if state.Config != nil {
@@ -1701,7 +1709,7 @@ func (rt *Runtime) ExecAttach(containerID string, args []string, env []string, w
 	var setupErr error
 	makeCmd := func() *exec.Cmd {
 		var cmd *exec.Cmd
-		switch rt.mode {
+		switch state.Mode {
 		case ModeProot:
 			var mounts []common.Mount
 			if state.Config != nil {
