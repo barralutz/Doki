@@ -10,9 +10,14 @@ import (
 
 const providerID = "postgresql"
 
+type runtimeProvisioner interface {
+	Ensure(context.Context, imageContract) (RuntimePaths, error)
+}
+
 type Provider struct {
 	cacheRoot    string
 	termuxPrefix string
+	provisioner  runtimeProvisioner
 }
 
 type imageContract struct {
@@ -22,7 +27,7 @@ type imageContract struct {
 }
 
 func New(cacheRoot, termuxPrefix string) *Provider {
-	return &Provider{cacheRoot: cacheRoot, termuxPrefix: termuxPrefix}
+	return &Provider{cacheRoot: cacheRoot, termuxPrefix: termuxPrefix, provisioner: newProvisioner(cacheRoot, termuxPrefix)}
 }
 
 func (p *Provider) ID() string { return providerID }
@@ -38,8 +43,15 @@ func (p *Provider) Match(_ context.Context, desc dr.WorkloadDescriptor) dr.Provi
 	}
 }
 
-func (p *Provider) Ensure(_ context.Context, desc dr.WorkloadDescriptor) error {
-	_, err := imageContractFromDescriptor(desc)
+func (p *Provider) Ensure(ctx context.Context, desc dr.WorkloadDescriptor) error {
+	contract, err := imageContractFromDescriptor(desc)
+	if err != nil {
+		return err
+	}
+	if p.provisioner == nil {
+		return fmt.Errorf("PostgreSQL provider provisioner is not configured")
+	}
+	_, err = p.provisioner.Ensure(ctx, contract)
 	return err
 }
 

@@ -102,3 +102,34 @@ func TestImageContractUsesImageMetadataNotUserEnvironment(t *testing.T) {
 		t.Fatalf("contract=%+v", contract)
 	}
 }
+
+type fakeRuntimeProvisioner struct {
+	calls    int
+	contract imageContract
+	err      error
+}
+
+func (f *fakeRuntimeProvisioner) Ensure(_ context.Context, contract imageContract) (RuntimePaths, error) {
+	f.calls++
+	f.contract = contract
+	return RuntimePaths{}, f.err
+}
+
+func TestProviderEnsureDelegatesExactImageContractToProvisioner(t *testing.T) {
+	fp := &fakeRuntimeProvisioner{}
+	p := &Provider{provisioner: fp}
+	desc := pgDescriptor("postgres:16-alpine",
+		"PG_MAJOR=16",
+		"PG_VERSION=16.15",
+		"PG_SHA256="+verifiedPGSHA256,
+	)
+	if err := p.Ensure(context.Background(), desc); err != nil {
+		t.Fatal(err)
+	}
+	if fp.calls != 1 {
+		t.Fatalf("provisioner calls=%d, want 1", fp.calls)
+	}
+	if fp.contract.Version != "16.15" || fp.contract.Major != "16" || fp.contract.SHA256 != verifiedPGSHA256 {
+		t.Fatalf("contract=%+v", fp.contract)
+	}
+}
