@@ -89,6 +89,7 @@ func BuildProotBaseArgs(rootfs string, uid, gid int) ([]string, error) {
 		"-b", "/dev/urandom:/dev/random",
 		"--kill-on-exit",
 		"--link2symlink",
+		"--sysvipc",
 		"--kernel-release=" + DetectKernelRelease(),
 	}
 
