@@ -77,8 +77,10 @@ func (s *Server) rootHandler() http.Handler {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/v") {
 			parts := strings.SplitN(path[1:], "/", 2)
-			if len(parts) >= 2 {
-				path = "/" + parts[1]
+			if len(parts) == 2 && strings.HasPrefix(parts[0], "v") {
+				if _, err := strconv.ParseFloat(strings.TrimPrefix(parts[0], "v"), 64); err == nil {
+					path = "/" + parts[1]
+				}
 			}
 		}
 		r.URL.Path = path
