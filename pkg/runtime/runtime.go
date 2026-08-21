@@ -86,6 +86,9 @@ type Runtime struct {
 	volumeResolver   VolumeResolver
 	androidProviders *AndroidProviderRegistry
 
+	portProxyMu sync.Mutex
+	portProxies map[string][]io.Closer
+
 	hcMu           sync.Mutex
 	healthCheckers map[string]*HealthChecker
 
@@ -257,13 +260,14 @@ func WithAndroidProviderRegistry(reg *AndroidProviderRegistry) RuntimeOption {
 // NewRuntime creates a new container runtime instance.
 func NewRuntime(root string, store *storage.Manager, opts ...RuntimeOption) *Runtime {
 	rt := &Runtime{
-		root:     root,
-		store:    store,
-		nsMgr:    namespaces.NewManager(root),
-		cgMgr:    cgroups.NewManager("/sys/fs/cgroup/doki"),
-		prootMgr: proot.NewManager(root),
-		rootless: namespaces.IsRootless(),
-		brokers:  make(map[string]*stdioBroker),
+		root:        root,
+		store:       store,
+		nsMgr:       namespaces.NewManager(root),
+		cgMgr:       cgroups.NewManager("/sys/fs/cgroup/doki"),
+		prootMgr:    proot.NewManager(root),
+		rootless:    namespaces.IsRootless(),
+		brokers:     make(map[string]*stdioBroker),
+		portProxies: make(map[string][]io.Closer),
 	}
 	for _, opt := range opts {
 		opt(rt)
@@ -1041,6 +1045,7 @@ func (rt *Runtime) monitorProcess(state *ContainerState, logFile *os.File) {
 			slog.Default().Warn("close failed", "error", err)
 		}
 	}
+	rt.closePortProxies(state.ID)
 
 	exitCode := -1
 	if state.Cmd != nil && state.Cmd.ProcessState != nil {
@@ -2384,6 +2389,7 @@ func (rt *Runtime) Processes(id string) ([]string, error) {
 // ─── Helpers ───────────────────────────────────────────────────────
 
 func (rt *Runtime) cleanupContainer(state *ContainerState) {
+	rt.closePortProxies(state.ID)
 	if rt.cgMgr != nil {
 		_ = rt.cgMgr.Destroy(state.ID)
 	}

@@ -109,6 +109,15 @@ func (rt *Runtime) startAndroidNative(state *ContainerState, logFile *os.File) (
 		broker.afterStart()
 		rt.registerBroker(state.ID, broker)
 	}
+	if err := rt.replacePortProxies(state.ID, prepared.PortForwards); err != nil {
+		if broker != nil {
+			broker.Close()
+		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_, _ = cmd.Process.Wait()
+		rt.closePortProxies(state.ID)
+		return 0, nil, fmt.Errorf("start Android provider TCP forward: %w", err)
+	}
 	return cmd.Process.Pid, cmd, nil
 }
 

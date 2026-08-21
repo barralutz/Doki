@@ -45,11 +45,19 @@ type ProviderMatch struct {
 }
 
 // PreparedWorkload is a host process specification returned by a provider.
+type PortForward struct {
+	ListenHost string
+	ListenPort uint16
+	TargetHost string
+	TargetPort uint16
+}
+
 type PreparedWorkload struct {
-	Executable string
-	Args       []string
-	Env        []string
-	Cwd        string
+	Executable   string
+	Args         []string
+	Env          []string
+	Cwd          string
+	PortForwards []PortForward
 }
 
 // PreparedExec is a host exec process specification returned by a provider.

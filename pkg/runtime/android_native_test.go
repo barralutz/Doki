@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -451,4 +454,134 @@ func TestAndroidNativeRestartUsesPersistedProviderID(t *testing.T) {
 	if current.Status != common.StateRunning || current.Mode != ModeAndroidNative {
 		t.Fatalf("state after restart=%+v", current)
 	}
+}
+
+func TestAndroidNativePortForwardLifecycle(t *testing.T) {
+	t.Run("start and stop", func(t *testing.T) {
+		target, echo := startEchoServer(t)
+		defer echo.Close()
+		targetHost, targetPortText, _ := net.SplitHostPort(target)
+		targetPort, _ := strconv.Atoi(targetPortText)
+		listenPort := freeTCPPort(t)
+		provider := &fakeAndroidProvider{
+			id:    "fake-port",
+			match: ProviderMatch{Matched: true, Required: true},
+			prepared: &PreparedWorkload{
+				Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/",
+				PortForwards: []PortForward{{ListenHost: "127.0.0.1", ListenPort: listenPort, TargetHost: targetHost, TargetPort: uint16(targetPort)}},
+			},
+		}
+		reg := NewAndroidProviderRegistry()
+		_ = reg.Register(provider)
+		rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+		state, err := rt.Create(&Config{ID: "native-port-stop", ImageRef: "example:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Start(state.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+		if err := rt.Stop(state.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			ln, listenErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+			if listenErr == nil {
+				_ = ln.Close()
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("proxy listener still owned after stop: %v", listenErr)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+
+	t.Run("natural exit closes proxy", func(t *testing.T) {
+		target, echo := startEchoServer(t)
+		defer echo.Close()
+		targetHost, targetPortText, _ := net.SplitHostPort(target)
+		targetPort, _ := strconv.Atoi(targetPortText)
+		listenPort := freeTCPPort(t)
+		provider := &fakeAndroidProvider{
+			id:    "fake-port-exit",
+			match: ProviderMatch{Matched: true, Required: true},
+			prepared: &PreparedWorkload{
+				Executable: "/bin/sleep", Args: []string{"0.15"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/",
+				PortForwards: []PortForward{{ListenHost: "127.0.0.1", ListenPort: listenPort, TargetHost: targetHost, TargetPort: uint16(targetPort)}},
+			},
+		}
+		reg := NewAndroidProviderRegistry()
+		_ = reg.Register(provider)
+		rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+		state, err := rt.Create(&Config{ID: "native-port-exit", ImageRef: "example:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Start(state.ID); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			current, err := rt.State(state.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Status == common.StateExited {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("container did not exit: %+v", current)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+		if err != nil {
+			t.Fatalf("proxy listener survived process exit: %v", err)
+		}
+		_ = ln.Close()
+	})
+
+	t.Run("listen failure rolls back start", func(t *testing.T) {
+		listenPort := freeTCPPort(t)
+		occupied, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer occupied.Close()
+		provider := &fakeAndroidProvider{
+			id:    "fake-port-fail",
+			match: ProviderMatch{Matched: true, Required: true},
+			prepared: &PreparedWorkload{
+				Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/",
+				PortForwards: []PortForward{{ListenHost: "127.0.0.1", ListenPort: listenPort, TargetHost: "127.0.0.1", TargetPort: 5432}},
+			},
+		}
+		reg := NewAndroidProviderRegistry()
+		_ = reg.Register(provider)
+		rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+		state, err := rt.Create(&Config{ID: "native-port-fail", ImageRef: "example:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = rt.Start(state.ID)
+		if err == nil || !strings.Contains(err.Error(), "TCP forward") {
+			t.Fatalf("error=%v", err)
+		}
+		current, err := rt.State(state.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != common.StateCreated || current.Pid != 0 {
+			t.Fatalf("state after failed start=%+v", current)
+		}
+	})
 }
