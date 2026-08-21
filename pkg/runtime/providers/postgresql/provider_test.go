@@ -173,8 +173,9 @@ func TestProviderPrepareUsesExactRuntimeAndStripsOfficialEntrypoint(t *testing.T
 	if prepared.Executable != paths.Postgres {
 		t.Fatalf("Executable=%q, want %q", prepared.Executable, paths.Postgres)
 	}
-	if len(prepared.Args) != 0 {
-		t.Fatalf("Args=%q, want none for default postgres command", prepared.Args)
+	endpoint := endpointForContainer(desc.ContainerID).String()
+	if strings.Join(prepared.Args, " ") != "-h "+endpoint+" -p 5432" {
+		t.Fatalf("Args=%q, want only provider endpoint args", prepared.Args)
 	}
 	joined := strings.Join(prepared.Env, "\n")
 	for _, want := range []string{"PGDATA=" + desc.Mounts[0].HostPath, "PATH=" + paths.BinDir} {
@@ -196,7 +197,8 @@ func TestProviderPreparePreservesPostgresCommandOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(prepared.Args, " ") != "-c max_connections=25" {
+	endpoint := endpointForContainer(desc.ContainerID).String()
+	if strings.Join(prepared.Args, " ") != "-c max_connections=25 -h "+endpoint+" -p 5432" {
 		t.Fatalf("Args=%q", prepared.Args)
 	}
 }
@@ -260,5 +262,93 @@ func TestProviderPrepareExecRejectsUnknownExecutable(t *testing.T) {
 		if _, err := p.PrepareExec(context.Background(), desc, &dr.ExecConfig{Args: args}); err == nil {
 			t.Fatalf("args=%q unexpectedly accepted", args)
 		}
+	}
+}
+
+func TestEndpointForContainerIsDeterministicPrivateLoopback(t *testing.T) {
+	a1 := endpointForContainer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	a2 := endpointForContainer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	b := endpointForContainer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if !a1.Equal(a2) {
+		t.Fatalf("same container ID produced %s and %s", a1, a2)
+	}
+	if a1.Equal(b) {
+		t.Fatalf("fixture IDs collided at %s", a1)
+	}
+	v4 := a1.To4()
+	if v4 == nil || v4[0] != 127 || v4[1] < 64 || v4[1] > 127 || v4[3] == 0 || v4[3] == 255 {
+		t.Fatalf("endpoint %s is outside 127.64.0.0/10 usable hosts", a1)
+	}
+}
+
+func TestProviderPreparePlansPrivate5432AndPublishedPort(t *testing.T) {
+	desc := existingPostgresDescriptor(t)
+	desc.ContainerID = "postgres-port-plan"
+	desc.Ports = []common.Port{{IP: "127.0.0.1", PrivatePort: 5432, PublicPort: 5750, Type: common.ProtocolTCP}}
+	paths := fakeRuntimePaths("/provider/16.15")
+	p := &Provider{provisioner: &fakeRuntimeProvisioner{paths: paths}, clusterRunner: &fakeClusterRunner{}, termuxPrefix: "/termux"}
+
+	prepared, err := p.Prepare(context.Background(), desc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := endpointForContainer(desc.ContainerID).String()
+	joinedArgs := strings.Join(prepared.Args, " ")
+	if !strings.Contains(joinedArgs, "-h "+endpoint) || !strings.Contains(joinedArgs, "-p 5432") {
+		t.Fatalf("server args=%q", joinedArgs)
+	}
+	if len(prepared.PortForwards) != 1 {
+		t.Fatalf("forwards=%+v", prepared.PortForwards)
+	}
+	forward := prepared.PortForwards[0]
+	if forward.ListenHost != "127.0.0.1" || forward.ListenPort != 5750 || forward.TargetHost != endpoint || forward.TargetPort != 5432 {
+		t.Fatalf("forward=%+v", forward)
+	}
+	joinedEnv := strings.Join(prepared.Env, "\n")
+	if !strings.Contains(joinedEnv, "PGHOST="+endpoint) || !strings.Contains(joinedEnv, "PGPORT=5432") {
+		t.Fatalf("env=%q", joinedEnv)
+	}
+}
+
+func TestProviderPrepareDefaultsPublishedListenHostToAllInterfaces(t *testing.T) {
+	desc := existingPostgresDescriptor(t)
+	desc.Ports = []common.Port{{PrivatePort: 5432, PublicPort: 5750, Type: common.ProtocolTCP}}
+	p := &Provider{provisioner: &fakeRuntimeProvisioner{paths: fakeRuntimePaths("/provider/16.15")}, clusterRunner: &fakeClusterRunner{}}
+	prepared, err := p.Prepare(context.Background(), desc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.PortForwards[0].ListenHost; got != "0.0.0.0" {
+		t.Fatalf("ListenHost=%q, want 0.0.0.0", got)
+	}
+}
+
+func TestProviderPrepareRejectsUnsupportedPublishedPortProtocols(t *testing.T) {
+	for _, port := range []common.Port{
+		{PrivatePort: 5432, PublicPort: 5750, Type: common.ProtocolUDP},
+		{PrivatePort: 9999, PublicPort: 5750, Type: common.ProtocolTCP},
+	} {
+		desc := existingPostgresDescriptor(t)
+		desc.Ports = []common.Port{port}
+		p := &Provider{provisioner: &fakeRuntimeProvisioner{paths: fakeRuntimePaths("/provider/16.15")}, clusterRunner: &fakeClusterRunner{}}
+		if _, err := p.Prepare(context.Background(), desc); err == nil {
+			t.Fatalf("port=%+v unexpectedly accepted", port)
+		}
+	}
+}
+
+func TestProviderPrepareExecTargetsSamePrivateEndpoint(t *testing.T) {
+	desc := existingPostgresDescriptor(t)
+	desc.ContainerID = "postgres-exec-endpoint"
+	paths := fakeRuntimePaths("/provider/16.15")
+	p := &Provider{provisioner: &fakeRuntimeProvisioner{paths: paths}, clusterRunner: &fakeClusterRunner{}, termuxPrefix: "/termux"}
+	prepared, err := p.PrepareExec(context.Background(), desc, &dr.ExecConfig{Args: []string{"pg_isready", "-U", "techservice"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := endpointForContainer(desc.ContainerID).String()
+	joined := strings.Join(prepared.Env, "\n")
+	if !strings.Contains(joined, "PGHOST="+endpoint) || !strings.Contains(joined, "PGPORT=5432") {
+		t.Fatalf("env=%q", joined)
 	}
 }

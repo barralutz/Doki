@@ -2,10 +2,13 @@ package postgresql
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 
+	"github.com/OpceanAI/Doki/pkg/common"
 	dr "github.com/OpceanAI/Doki/pkg/runtime"
 )
 
@@ -80,11 +83,17 @@ func (p *Provider) Prepare(ctx context.Context, desc dr.WorkloadDescriptor) (*dr
 	if err != nil {
 		return nil, err
 	}
+	host, privatePort, forwards, err := postgresNetworkPlan(desc)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, "-h", host, "-p", fmt.Sprintf("%d", privatePort))
 	return &dr.PreparedWorkload{
-		Executable: paths.Postgres,
-		Args:       args,
-		Env:        providerProcessEnv(paths, cfg.PGData, "", 0, p.effectiveTermuxPrefix()),
-		Cwd:        "/",
+		Executable:   paths.Postgres,
+		Args:         args,
+		Env:          providerProcessEnv(paths, cfg.PGData, host, privatePort, p.effectiveTermuxPrefix()),
+		Cwd:          "/",
+		PortForwards: forwards,
 	}, nil
 }
 
@@ -130,8 +139,12 @@ func (p *Provider) PrepareExec(ctx context.Context, desc dr.WorkloadDescriptor, 
 		return nil, fmt.Errorf("PostgreSQL provider exec command %q is not supported", first)
 	}
 
+	host, privatePort, _, err := postgresNetworkPlan(desc)
+	if err != nil {
+		return nil, err
+	}
 	env := append([]string(nil), cfg.Env...)
-	env = append(env, providerProcessEnv(paths, cluster.PGData, "", 0, p.effectiveTermuxPrefix())...)
+	env = append(env, providerProcessEnv(paths, cluster.PGData, host, privatePort, p.effectiveTermuxPrefix())...)
 	return &dr.PreparedExec{
 		Executable: executable,
 		Args:       append([]string(nil), cfg.Args[1:]...),
@@ -228,4 +241,41 @@ func isOfficialPostgresRef(ref string) bool {
 	default:
 		return false
 	}
+}
+
+func endpointForContainer(id string) net.IP {
+	sum := sha256.Sum256([]byte(id))
+	return net.IPv4(127, 64+(sum[0]%64), sum[1], 1+(sum[2]%254))
+}
+
+func postgresNetworkPlan(desc dr.WorkloadDescriptor) (string, uint16, []dr.PortForward, error) {
+	const privatePort uint16 = 5432
+	host := endpointForContainer(desc.ContainerID).String()
+	forwards := make([]dr.PortForward, 0, len(desc.Ports))
+	for _, port := range desc.Ports {
+		if port.PublicPort == 0 {
+			continue
+		}
+		proto := port.Type
+		if proto == "" {
+			proto = common.ProtocolTCP
+		}
+		if proto != common.ProtocolTCP {
+			return "", 0, nil, fmt.Errorf("PostgreSQL Android provider does not support published %s ports", proto)
+		}
+		if port.PrivatePort != privatePort {
+			return "", 0, nil, fmt.Errorf("PostgreSQL Android provider only supports published container port 5432, got %d", port.PrivatePort)
+		}
+		listenHost := strings.TrimSpace(port.IP)
+		if listenHost == "" {
+			listenHost = "0.0.0.0"
+		}
+		forwards = append(forwards, dr.PortForward{
+			ListenHost: listenHost,
+			ListenPort: port.PublicPort,
+			TargetHost: host,
+			TargetPort: privatePort,
+		})
+	}
+	return host, privatePort, forwards, nil
 }
