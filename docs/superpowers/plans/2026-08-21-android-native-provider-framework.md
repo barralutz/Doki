@@ -933,4 +933,19 @@ SHA256: 0e001be5b7a86b868c0ed41518b1ccb5392fcf1adb85d683ef997ff765666ee3
 Size: 26211280 bytes
 ```
 
-The native Termux daemon smoke test, Phase 1 named-volume conformance rerun, push, and local/remote SHA comparison remain pending until the user restarts `dokid` natively from Termux.
+Native Termux daemon smoke verification after user restart:
+
+```text
+PID: 23695
+/proc/23695/exe: /data/data/com.termux/files/home/doki-test/bin/dokid-android-arm64.20260821-provider-framework
+Running SHA256: 0e001be5b7a86b868c0ed41518b1ccb5392fcf1adb85d683ef997ff765666ee3
+/version: HTTP 200, OS=android, Arch=arm64, Go=go1.27.0
+```
+
+The first Phase 1 conformance attempt encountered a stale pre-existing `volconformance` container whose persisted state referenced a bundle/rootfs that no longer existed. The daemon log showed no new `POST /containers/create` for that failing container, proving Compose reused residual state rather than exercising fresh container creation. The cleanup trap removed that stale object. A second run from a clean `volconformance` state performed fresh container create/start cycles and passed:
+
+```text
+PASS: named volume lifecycle volconformance_probe_data
+```
+
+Push and local/remote SHA comparison are the only remaining Phase 2 gate steps.
