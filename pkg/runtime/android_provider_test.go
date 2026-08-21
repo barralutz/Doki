@@ -128,6 +128,7 @@ func TestAndroidProviderRegistryRejectsInvalidIDs(t *testing.T) {
 
 func TestDescriptorFromConfigDoesNotAliasConfig(t *testing.T) {
 	cfg := &Config{
+		ID:          "provider-desc",
 		ImageRef:    "example:1",
 		ImageDigest: "sha256:abc",
 		Platform:    "linux/arm64",
@@ -138,6 +139,9 @@ func TestDescriptorFromConfigDoesNotAliasConfig(t *testing.T) {
 		Ports:       []common.Port{{PrivatePort: 5432, PublicPort: 5750, Type: common.ProtocolTCP}},
 	}
 	desc := descriptorFromConfig(cfg, []WorkloadMount{{Mount: cfg.Mounts[0], HostPath: "/host/db"}})
+	if desc.ContainerID != "provider-desc" {
+		t.Fatalf("ContainerID=%q, want provider-desc", desc.ContainerID)
+	}
 	desc.Args[0] = "changed"
 	desc.Env[0] = "A=2"
 	desc.Labels["k"] = "changed"

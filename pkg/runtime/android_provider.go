@@ -20,6 +20,7 @@ type WorkloadMount struct {
 // WorkloadDescriptor is the immutable-by-convention container contract a
 // provider evaluates and prepares.
 type WorkloadDescriptor struct {
+	ContainerID string
 	ImageRef    string
 	ImageDigest string
 	Platform    string
@@ -153,6 +154,7 @@ func descriptorFromConfig(cfg *Config, mounts []WorkloadMount) WorkloadDescripto
 		return WorkloadDescriptor{}
 	}
 	desc := WorkloadDescriptor{
+		ContainerID: cfg.ID,
 		ImageRef:    cfg.ImageRef,
 		ImageDigest: cfg.ImageDigest,
 		Platform:    cfg.Platform,
