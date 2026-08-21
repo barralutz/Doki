@@ -49,6 +49,21 @@ func (rt *Runtime) androidProviderForState(state *ContainerState) (AndroidWorklo
 	return provider, nil
 }
 
+func (rt *Runtime) cleanupAndroidProvider(state *ContainerState) error {
+	provider, err := rt.androidProviderForState(state)
+	if err != nil {
+		return err
+	}
+	desc, err := rt.resolvedDescriptor(state.Config)
+	if err != nil {
+		return err
+	}
+	if err := provider.Cleanup(context.Background(), desc); err != nil {
+		return fmt.Errorf("Android provider %q cleanup: %w", provider.ID(), err)
+	}
+	return nil
+}
+
 func (rt *Runtime) startAndroidNative(state *ContainerState, logFile *os.File) (int, *exec.Cmd, error) {
 	provider, err := rt.androidProviderForState(state)
 	if err != nil {

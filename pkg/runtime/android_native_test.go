@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OpceanAI/Doki/internal/cgroups"
 	"github.com/OpceanAI/Doki/pkg/common"
 )
 
@@ -40,7 +41,7 @@ func TestAndroidNativeStartUsesProviderProcess(t *testing.T) {
 	provider := &fakeAndroidProvider{
 		id:       "fake",
 		match:    ProviderMatch{Matched: true, Required: true, Reason: "test"},
-		prepared: &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "printf provider-started; sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		prepared: &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "printf provider-started; exec sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
 	}
 	reg := NewAndroidProviderRegistry()
 	_ = reg.Register(provider)
@@ -151,7 +152,7 @@ func newRunningAndroidProviderRuntime(t *testing.T, provider *fakeAndroidProvide
 func TestAndroidNativeExecUsesProvider(t *testing.T) {
 	p := &fakeAndroidProvider{
 		id: "fake", match: ProviderMatch{Matched: true, Required: true},
-		prepared:     &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		prepared:     &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
 		preparedExec: &PreparedExec{Executable: "/bin/sh", Args: []string{"-c", "printf ready"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
 	}
 	rt, state := newRunningAndroidProviderRuntime(t, p)
@@ -170,7 +171,7 @@ func TestAndroidNativeExecUsesProvider(t *testing.T) {
 func TestAndroidNativeExecAttachStreamsStdinAndStdout(t *testing.T) {
 	p := &fakeAndroidProvider{
 		id: "fake", match: ProviderMatch{Matched: true, Required: true},
-		prepared:     &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		prepared:     &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
 		preparedExec: &PreparedExec{Executable: "/bin/sh", Args: []string{"-c", `read line; printf 'got:%s' "$line"`}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
 	}
 	rt, state := newRunningAndroidProviderRuntime(t, p)
@@ -199,7 +200,7 @@ func TestAndroidNativeExecAttachStreamsStdinAndStdout(t *testing.T) {
 func TestAndroidNativeHealthcheckUsesProviderExec(t *testing.T) {
 	p := &fakeAndroidProvider{
 		id: "fake", match: ProviderMatch{Matched: true, Required: true},
-		prepared:     &PreparedWorkload{Executable: "/bin/sh", Args: []string{"-c", "sleep 30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		prepared:     &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
 		preparedExec: &PreparedExec{Executable: "/bin/sh", Args: []string{"-c", "printf healthy"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
 	}
 	rt, state := newRunningAndroidProviderRuntime(t, p)
@@ -210,5 +211,244 @@ func TestAndroidNativeHealthcheckUsesProviderExec(t *testing.T) {
 	}
 	if p.lastExec == nil || len(p.lastExec.Args) != 1 || p.lastExec.Args[0] != "provider-health" {
 		t.Fatalf("lastExec=%+v", p.lastExec)
+	}
+}
+
+func TestAndroidNativePauseUnpauseUsesPersistedPID(t *testing.T) {
+	const missingPID = 1 << 30
+
+	t.Run("pause", func(t *testing.T) {
+		rt := NewRuntime(t.TempDir(), nil)
+		rt.cgMgr = nil
+		state := &ContainerState{ID: "pause-persisted", Status: common.StateRunning, Pid: missingPID, Mode: ModeAndroidNative}
+		if err := rt.saveState(state); err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Pause(state.ID); err == nil {
+			t.Fatal("Pause succeeded without signaling persisted PID")
+		}
+		current, err := rt.State(state.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != common.StateRunning {
+			t.Fatalf("status=%s, want running after failed signal", current.Status)
+		}
+	})
+
+	t.Run("cgroup freeze failure falls back to persisted pid", func(t *testing.T) {
+		rt := NewRuntime(t.TempDir(), nil)
+		rt.cgMgr = cgroups.NewManager(t.TempDir())
+		if !rt.cgMgr.IsAvailable() {
+			t.Skip("cgroup v2 not reported by kernel")
+		}
+		state := &ContainerState{ID: "pause-cgroup-fallback", Status: common.StateRunning, Pid: missingPID, Mode: ModeAndroidNative}
+		if err := rt.saveState(state); err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Pause(state.ID); err == nil {
+			t.Fatal("Pause ignored cgroup freeze failure instead of signaling persisted PID")
+		}
+		current, err := rt.State(state.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != common.StateRunning {
+			t.Fatalf("status=%s, want running after failed fallback signal", current.Status)
+		}
+	})
+
+	t.Run("unpause", func(t *testing.T) {
+		rt := NewRuntime(t.TempDir(), nil)
+		rt.cgMgr = nil
+		state := &ContainerState{ID: "unpause-persisted", Status: common.StatePaused, Pid: missingPID, Mode: ModeAndroidNative}
+		if err := rt.saveState(state); err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Unpause(state.ID); err == nil {
+			t.Fatal("Unpause succeeded without signaling persisted PID")
+		}
+		current, err := rt.State(state.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != common.StatePaused {
+			t.Fatalf("status=%s, want paused after failed signal", current.Status)
+		}
+	})
+}
+
+func TestAndroidNativeDeleteCallsProviderCleanup(t *testing.T) {
+	t.Run("cleanup before removal", func(t *testing.T) {
+		p := &fakeAndroidProvider{id: "fake", match: ProviderMatch{Matched: true, Required: true}}
+		reg := NewAndroidProviderRegistry()
+		if err := reg.Register(p); err != nil {
+			t.Fatal(err)
+		}
+		rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+		state, err := rt.Create(&Config{ID: "cleanup-native", ImageRef: "example:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Delete(state.ID, false); err != nil {
+			t.Fatal(err)
+		}
+		if p.cleanupCalls != 1 {
+			t.Fatalf("cleanupCalls=%d, want 1", p.cleanupCalls)
+		}
+		if _, err := rt.State(state.ID); err == nil {
+			t.Fatal("container state still exists after successful cleanup/delete")
+		}
+	})
+
+	t.Run("cleanup failure retains state", func(t *testing.T) {
+		cleanupErr := errors.New("cleanup failed")
+		p := &fakeAndroidProvider{id: "fake", match: ProviderMatch{Matched: true, Required: true}, cleanupErr: cleanupErr}
+		reg := NewAndroidProviderRegistry()
+		if err := reg.Register(p); err != nil {
+			t.Fatal(err)
+		}
+		rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+		state, err := rt.Create(&Config{ID: "cleanup-retry", ImageRef: "example:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = rt.Delete(state.ID, false)
+		if err == nil || !strings.Contains(err.Error(), cleanupErr.Error()) {
+			t.Fatalf("Delete error=%v, want cleanup error", err)
+		}
+		if p.cleanupCalls != 1 {
+			t.Fatalf("cleanupCalls=%d, want 1", p.cleanupCalls)
+		}
+		if _, err := rt.State(state.ID); err != nil {
+			t.Fatalf("container state removed after cleanup failure: %v", err)
+		}
+	})
+}
+
+func TestAndroidNativeStopKillUsePersistedPID(t *testing.T) {
+	newRuntime := func(t *testing.T, id string) (*Runtime, *fakeAndroidProvider, *ContainerState) {
+		t.Helper()
+		p := &fakeAndroidProvider{
+			id:       "fake",
+			match:    ProviderMatch{Matched: true, Required: true},
+			prepared: &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		}
+		reg := NewAndroidProviderRegistry()
+		if err := reg.Register(p); err != nil {
+			t.Fatal(err)
+		}
+		rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+		state, err := rt.Create(&Config{ID: id, ImageRef: "example:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Start(state.ID); err != nil {
+			t.Fatal(err)
+		}
+		return rt, p, state
+	}
+
+	t.Run("stop", func(t *testing.T) {
+		rt, _, state := newRuntime(t, "native-stop")
+		if err := rt.Stop(state.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+		current, err := rt.State(state.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != common.StateExited {
+			t.Fatalf("status=%s, want exited", current.Status)
+		}
+		if current.Mode != ModeAndroidNative {
+			t.Fatalf("mode=%v, want android-native", current.Mode)
+		}
+	})
+
+	t.Run("kill", func(t *testing.T) {
+		rt, _, state := newRuntime(t, "native-kill")
+		if err := rt.Kill(state.ID, 9); err != nil {
+			t.Fatal(err)
+		}
+		current, err := rt.State(state.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != common.StateExited {
+			t.Fatalf("status=%s, want exited", current.Status)
+		}
+		if current.Mode != ModeAndroidNative {
+			t.Fatalf("mode=%v, want android-native", current.Mode)
+		}
+	})
+}
+
+func TestAndroidNativeRestartUsesPersistedProviderID(t *testing.T) {
+	root := t.TempDir()
+	persisted := &fakeAndroidProvider{
+		id:       "persisted",
+		match:    ProviderMatch{Matched: true, Required: true},
+		prepared: &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	reg1 := NewAndroidProviderRegistry()
+	if err := reg1.Register(persisted); err != nil {
+		t.Fatal(err)
+	}
+	rt1 := NewRuntime(root, nil, WithAndroidProviderRegistry(reg1))
+	state, err := rt1.Create(&Config{ID: "native-restart", ImageRef: "example:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt1.Start(state.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt1.Stop(state.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	other := &fakeAndroidProvider{
+		id:       "other",
+		match:    ProviderMatch{Matched: true, Required: true},
+		prepared: &PreparedWorkload{Executable: "/bin/false", Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	reg2 := NewAndroidProviderRegistry()
+	if err := reg2.Register(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg2.Register(persisted); err != nil {
+		t.Fatal(err)
+	}
+	rt2 := NewRuntime(root, nil, WithAndroidProviderRegistry(reg2))
+	before, err := rt2.State(state.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Status != common.StateExited || before.Mode != ModeAndroidNative {
+		t.Fatalf("reloaded state=%+v", before)
+	}
+	ps, err := rt2.loadAndroidProviderState(state.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps.ProviderID != "persisted" {
+		t.Fatalf("provider ID=%q, want persisted", ps.ProviderID)
+	}
+	if err := rt2.Start(state.ID); err != nil {
+		t.Fatalf("restart failed; provider may have been reselected: %v", err)
+	}
+	t.Cleanup(func() { _ = rt2.Kill(state.ID, 9) })
+	if persisted.ensureCalls != 2 || persisted.prepareCalls != 2 {
+		t.Fatalf("persisted ensure=%d prepare=%d, want 2/2", persisted.ensureCalls, persisted.prepareCalls)
+	}
+	if other.ensureCalls != 0 || other.prepareCalls != 0 {
+		t.Fatalf("other provider was used: ensure=%d prepare=%d", other.ensureCalls, other.prepareCalls)
+	}
+	current, err := rt2.State(state.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != common.StateRunning || current.Mode != ModeAndroidNative {
+		t.Fatalf("state after restart=%+v", current)
 	}
 }

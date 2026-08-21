@@ -2021,12 +2021,26 @@ func (rt *Runtime) Pause(id string) error {
 	if state.Status != common.StateRunning {
 		return fmt.Errorf("container %s is not running", id)
 	}
+	pausedWithCgroup := false
 	if rt.cgMgr != nil && rt.cgMgr.IsAvailable() {
-		_ = rt.cgMgr.Freeze(id)
-	} else if state.Cmd != nil && state.Cmd.Process != nil {
-		// Fallback: SIGSTOP the process
-		if err := state.Cmd.Process.Signal(syscall.SIGSTOP); err != nil {
-			slog.Warn("SIGSTOP failed", "error", err)
+		pausedWithCgroup = rt.cgMgr.Freeze(id) == nil
+	}
+	if !pausedWithCgroup {
+		var process *os.Process
+		if state.Cmd != nil {
+			process = state.Cmd.Process
+		}
+		if process == nil && state.Pid > 0 {
+			process, err = os.FindProcess(state.Pid)
+			if err != nil {
+				return fmt.Errorf("process %d not found: %w", state.Pid, err)
+			}
+		}
+		if process == nil {
+			return fmt.Errorf("container %s has no process", id)
+		}
+		if err := process.Signal(syscall.SIGSTOP); err != nil {
+			return fmt.Errorf("SIGSTOP process %d: %w", state.Pid, err)
 		}
 	}
 	state.Status = common.StatePaused
@@ -2044,12 +2058,26 @@ func (rt *Runtime) Unpause(id string) error {
 	if state.Status != common.StatePaused {
 		return fmt.Errorf("container %s is not paused", id)
 	}
+	resumedWithCgroup := false
 	if rt.cgMgr != nil && rt.cgMgr.IsAvailable() {
-		_ = rt.cgMgr.Thaw(id)
-	} else if state.Cmd != nil && state.Cmd.Process != nil {
-		// Fallback: SIGCONT the process
-		if err := state.Cmd.Process.Signal(syscall.SIGCONT); err != nil {
-			slog.Warn("SIGCONT failed", "error", err)
+		resumedWithCgroup = rt.cgMgr.Thaw(id) == nil
+	}
+	if !resumedWithCgroup {
+		var process *os.Process
+		if state.Cmd != nil {
+			process = state.Cmd.Process
+		}
+		if process == nil && state.Pid > 0 {
+			process, err = os.FindProcess(state.Pid)
+			if err != nil {
+				return fmt.Errorf("process %d not found: %w", state.Pid, err)
+			}
+		}
+		if process == nil {
+			return fmt.Errorf("container %s has no process", id)
+		}
+		if err := process.Signal(syscall.SIGCONT); err != nil {
+			return fmt.Errorf("SIGCONT process %d: %w", state.Pid, err)
 		}
 	}
 	state.Status = common.StateRunning
@@ -2089,6 +2117,12 @@ func (rt *Runtime) Delete(id string, force bool) error {
 		if err != nil {
 			rt.mu.Unlock()
 			return nil // State already cleaned up by Stop.
+		}
+	}
+	if state.Mode == ModeAndroidNative {
+		if err := rt.cleanupAndroidProvider(state); err != nil {
+			rt.mu.Unlock()
+			return err
 		}
 	}
 	rt.cleanupContainer(state)
