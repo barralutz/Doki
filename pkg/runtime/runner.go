@@ -11,18 +11,19 @@ import (
 type ExecutionMode int
 
 const (
-	ModeNative     ExecutionMode = iota // 0: Direct host execution
-	ModeProot                           // 1: proot-based isolation
-	ModeNamespaces                      // 2: Full Linux namespace isolation
-	ModeMicroVM                         // 3: Hardware-level isolation via microVM
-	ModeGVisor                          // 4: gVisor systrap user-space kernel
-	ModeWASM                            // 5: WasmEdge/WAMR/Wasmtime WASI containers
-	ModePkDroid                         // 6: pKVM hardware isolation + Microdroid
-	ModeSysbox                          // 7: Rootless DinD via sysbox-runc
-	ModeQEMUUser                        // 8: QEMU user-mode cross-arch emulation
-	ModeChroot                          // 9: Lightweight chroot isolation
-	ModeFEX                             // 10: FEX-Emu/Box64 x86 emulation on ARM64
-	ModeLegacy32                        // 11: Dual-arch ARMv7/ARM64 containers
+	ModeNative        ExecutionMode = iota // 0: Direct host execution
+	ModeProot                              // 1: proot-based isolation
+	ModeNamespaces                         // 2: Full Linux namespace isolation
+	ModeMicroVM                            // 3: Hardware-level isolation via microVM
+	ModeGVisor                             // 4: gVisor systrap user-space kernel
+	ModeWASM                               // 5: WasmEdge/WAMR/Wasmtime WASI containers
+	ModePkDroid                            // 6: pKVM hardware isolation + Microdroid
+	ModeSysbox                             // 7: Rootless DinD via sysbox-runc
+	ModeQEMUUser                           // 8: QEMU user-mode cross-arch emulation
+	ModeChroot                             // 9: Lightweight chroot isolation
+	ModeFEX                                // 10: FEX-Emu/Box64 x86 emulation on ARM64
+	ModeLegacy32                           // 11: Dual-arch ARMv7/ARM64 containers
+	ModeAndroidNative                      // 12: Registered Android-native workload provider
 )
 
 // ExecutionModeInfo describes a runtime mode in user-facing terms. Level is a
@@ -61,6 +62,8 @@ func (m ExecutionMode) Info() ExecutionModeInfo {
 		return ExecutionModeInfo{Mode: m, Name: m.String(), Level: 3, Isolation: "compat", Platforms: []string{"linux/arm64", "android/arm64"}, Description: "ARMv7 compatibility on ARM64 hosts"}
 	case ModeChroot:
 		return ExecutionModeInfo{Mode: m, Name: m.String(), Level: 2, Isolation: "chroot", Platforms: []string{"linux/*", "android/*"}, Description: "chroot-style filesystem isolation"}
+	case ModeAndroidNative:
+		return ExecutionModeInfo{Mode: m, Name: m.String(), Level: 1, Isolation: "android-host-process", Platforms: []string{"android/arm64", "android/armv7"}, Description: "registered Android-native workload provider managed through Docker semantics"}
 	case ModeNative:
 		return ExecutionModeInfo{Mode: m, Name: m.String(), Level: 1, Isolation: "none", Platforms: []string{"linux/*", "android/*", "darwin/*"}, Description: "direct host execution without container isolation"}
 	default:
@@ -73,7 +76,7 @@ func (m ExecutionMode) Info() ExecutionModeInfo {
 func ExecutionModeInfos() []ExecutionModeInfo {
 	modes := []ExecutionMode{
 		ModePkDroid, ModeMicroVM, ModeGVisor, ModeWASM, ModeSysbox, ModeNamespaces,
-		ModeProot, ModeQEMUUser, ModeFEX, ModeLegacy32, ModeChroot, ModeNative,
+		ModeProot, ModeQEMUUser, ModeFEX, ModeLegacy32, ModeChroot, ModeAndroidNative, ModeNative,
 	}
 	infos := make([]ExecutionModeInfo, 0, len(modes))
 	for _, mode := range modes {
@@ -109,6 +112,8 @@ func (m ExecutionMode) String() string {
 		return "fex"
 	case ModeLegacy32:
 		return "legacy32"
+	case ModeAndroidNative:
+		return "android-native"
 	default:
 		return "unknown"
 	}
@@ -141,6 +146,8 @@ func ParseExecutionMode(s string) (ExecutionMode, bool) {
 		return ModeFEX, true
 	case "legacy32":
 		return ModeLegacy32, true
+	case "android-native":
+		return ModeAndroidNative, true
 	default:
 		return 0, false
 	}
@@ -151,7 +158,7 @@ func AllExecutionModes() []ExecutionMode {
 	return []ExecutionMode{
 		ModeNative, ModeProot, ModeNamespaces, ModeMicroVM,
 		ModeGVisor, ModeWASM, ModePkDroid, ModeSysbox,
-		ModeQEMUUser, ModeChroot, ModeFEX, ModeLegacy32,
+		ModeQEMUUser, ModeChroot, ModeFEX, ModeLegacy32, ModeAndroidNative,
 	}
 }
 

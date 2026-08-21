@@ -9,6 +9,32 @@ import (
 	"time"
 )
 
+func TestExecutionModeNumericValuesRemainStable(t *testing.T) {
+	want := map[ExecutionMode]int{
+		ModeNative: 0, ModeProot: 1, ModeNamespaces: 2, ModeMicroVM: 3,
+		ModeGVisor: 4, ModeWASM: 5, ModePkDroid: 6, ModeSysbox: 7,
+		ModeQEMUUser: 8, ModeChroot: 9, ModeFEX: 10, ModeLegacy32: 11,
+	}
+	for mode, n := range want {
+		if int(mode) != n {
+			t.Fatalf("%s = %d, want %d", mode, mode, n)
+		}
+	}
+}
+
+func TestAndroidNativeExecutionMode(t *testing.T) {
+	if int(ModeAndroidNative) != 12 {
+		t.Fatalf("ModeAndroidNative = %d, want 12", ModeAndroidNative)
+	}
+	if ModeAndroidNative.String() != "android-native" {
+		t.Fatalf("ModeAndroidNative.String() = %q", ModeAndroidNative.String())
+	}
+	got, ok := ParseExecutionMode("android-native")
+	if !ok || got != ModeAndroidNative {
+		t.Fatalf("ParseExecutionMode(android-native) = %v, %v", got, ok)
+	}
+}
+
 func TestExecutionModeString(t *testing.T) {
 	tests := []struct {
 		mode ExecutionMode
@@ -69,8 +95,8 @@ func TestParseExecutionMode(t *testing.T) {
 
 func TestAllExecutionModes(t *testing.T) {
 	modes := AllExecutionModes()
-	if len(modes) != 12 {
-		t.Errorf("AllExecutionModes() returned %d modes, want 12", len(modes))
+	if len(modes) != 13 {
+		t.Errorf("AllExecutionModes() returned %d modes, want 13", len(modes))
 	}
 	seen := make(map[ExecutionMode]bool)
 	for _, m := range modes {
