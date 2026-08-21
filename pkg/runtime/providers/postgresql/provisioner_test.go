@@ -291,3 +291,47 @@ func TestNativeSourceBuilderUsesVendoredAndroidPatchesAndTermuxToolchain(t *test
 		}
 	}
 }
+
+type fakeCurlRunner struct {
+	calls []recordedCommand
+}
+
+func (f *fakeCurlRunner) Run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+	f.calls = append(f.calls, recordedCommand{dir: dir, name: name, args: append([]string(nil), args...)})
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-o" {
+			if err := os.WriteFile(args[i+1], []byte("downloaded"), 0644); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return nil, nil
+}
+
+func TestDownloadFileWithCurlUsesNativeTermuxCurl(t *testing.T) {
+	prefix := t.TempDir()
+	writeFakeTool(t, prefix, "curl")
+	runner := &fakeCurlRunner{}
+	dst := filepath.Join(t.TempDir(), "postgresql.tar.bz2")
+	url := "https://ftp.postgresql.org/pub/source/v16.15/postgresql-16.15.tar.bz2"
+
+	if err := downloadFileWithCurl(context.Background(), runner, prefix, url, dst); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls=%+v", runner.calls)
+	}
+	call := runner.calls[0]
+	if call.name != filepath.Join(prefix, "bin", "curl") {
+		t.Fatalf("curl executable=%q", call.name)
+	}
+	joined := strings.Join(call.args, " ")
+	for _, want := range []string{"-fL", "--retry 3", "-o " + dst, url} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("curl args=%q missing %q", joined, want)
+		}
+	}
+	if raw, err := os.ReadFile(dst); err != nil || string(raw) != "downloaded" {
+		t.Fatalf("downloaded file=%q err=%v", raw, err)
+	}
+}

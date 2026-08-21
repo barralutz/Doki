@@ -6,7 +6,6 @@ import (
 	"embed"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,8 +70,10 @@ func newProvisioner(cacheRoot, termuxPrefix string) *provisioner {
 		termuxPrefix: termuxPrefix,
 		arch:         runtime.GOARCH,
 		runner:       runner,
-		download:     downloadFile,
-		builder:      &nativeSourceBuilder{runner: runner},
+		download: func(ctx context.Context, url, dst string) error {
+			return downloadFileWithCurl(ctx, runner, termuxPrefix, url, dst)
+		},
+		builder: &nativeSourceBuilder{runner: runner},
 	}
 }
 
@@ -203,28 +204,35 @@ func sourceURL(version string) string {
 	return "https://ftp.postgresql.org/pub/source/v" + version + "/postgresql-" + version + ".tar.bz2"
 }
 
-func downloadFile(ctx context.Context, url, dst string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func downloadFileWithCurl(ctx context.Context, runner commandRunner, termuxPrefix, url, dst string) error {
+	curlBin := filepath.Join(termuxPrefix, "bin", "curl")
+	info, err := os.Stat(curlBin)
+	if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+		return fmt.Errorf("required Termux curl is unavailable: %s", curlBin)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return fmt.Errorf("create PostgreSQL download directory: %w", err)
+	}
+	_ = os.Remove(dst)
+	if _, err := runner.Run(ctx, "", curlBin,
+		"-fL",
+		"--retry", "3",
+		"--retry-delay", "1",
+		"-o", dst,
+		url,
+	); err != nil {
+		_ = os.Remove(dst)
+		return fmt.Errorf("Termux curl download %s: %w", url, err)
+	}
+	info, err = os.Stat(dst)
 	if err != nil {
-		return err
+		return fmt.Errorf("Termux curl did not create download %s: %w", dst, err)
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+	if info.Size() == 0 {
+		_ = os.Remove(dst)
+		return fmt.Errorf("Termux curl created empty download %s", dst)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %s", resp.Status)
-	}
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
+	return nil
 }
 
 func fileSHA256(path string) (string, error) {
