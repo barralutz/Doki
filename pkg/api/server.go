@@ -1576,7 +1576,9 @@ func (s *Server) handleContainerAttach(w http.ResponseWriter, r *http.Request, i
 	if tty {
 		contentType = "application/vnd.docker.raw-stream"
 	}
-	_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n", contentType)
+	if err := writeExecHijackResponse(conn, r, contentType); err != nil {
+		return
+	}
 
 	wantStdin := r.URL.Query().Get("stdin") == "1" || r.URL.Query().Get("stdin") == "true"
 	replayLogs := r.URL.Query().Get("logs") == "1" || r.URL.Query().Get("logs") == "true"
