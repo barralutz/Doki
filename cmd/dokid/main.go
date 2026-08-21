@@ -49,6 +49,7 @@ import (
 	runners_sysbox "github.com/OpceanAI/Doki/pkg/runtime/runners/sysbox"
 	runners_wasm "github.com/OpceanAI/Doki/pkg/runtime/runners/wasm"
 	"github.com/OpceanAI/Doki/pkg/storage"
+	"github.com/OpceanAI/Doki/pkg/volume"
 )
 
 var (
@@ -263,9 +264,16 @@ func main() {
 	if dnsReady {
 		dnsAddr = dnsServer.Addr()
 	}
+	volumeMgr, err := volume.NewManager(filepath.Join(cfg.DataDir, "volumes"))
+	if err != nil {
+		logger.Error("failed to create volume manager", "err", err)
+		os.Exit(1)
+	}
+
 	rt := dr.NewRuntime(execRoot, storeMgr,
 		dr.WithRegistry(registry),
 		dr.WithDNSAddr(dnsAddr),
+		dr.WithVolumeResolver(volumeMgr),
 	)
 	logger.Info("runtime mode", "mode", modeString(rt.Mode()))
 	logger.Info("available runtimes", "count", len(registry.Available()))
@@ -289,7 +297,7 @@ func main() {
 		}()
 	}
 
-	server, err := api.NewServer(cfg, rt, imgStore, netMgr)
+	server, err := api.NewServer(cfg, rt, imgStore, netMgr, volumeMgr)
 	if err != nil {
 		logger.Error("failed to create API server", "err", err)
 		os.Exit(1)

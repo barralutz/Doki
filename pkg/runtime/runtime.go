@@ -15,11 +15,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
-	"sort"
 	"time"
 
 	"github.com/OpceanAI/Doki/internal/cgroups"
@@ -73,16 +73,17 @@ func logChownError(operation, target string, err error) {
 
 // Runtime implements the OCI Runtime Specification.
 type Runtime struct {
-	mu       sync.RWMutex
-	root     string
-	store    *storage.Manager
-	nsMgr    *namespaces.Manager
-	cgMgr    *cgroups.Manager
-	prootMgr *proot.Manager
-	rootless bool
-	mode     ExecutionMode
-	registry *Registry
-	dnsAddr  string // Internal DNS server address (e.g., "127.0.0.11:53")
+	mu             sync.RWMutex
+	root           string
+	store          *storage.Manager
+	nsMgr          *namespaces.Manager
+	cgMgr          *cgroups.Manager
+	prootMgr       *proot.Manager
+	rootless       bool
+	mode           ExecutionMode
+	registry       *Registry
+	dnsAddr        string // Internal DNS server address (e.g., "127.0.0.11:53")
+	volumeResolver VolumeResolver
 
 	hcMu           sync.Mutex
 	healthCheckers map[string]*HealthChecker

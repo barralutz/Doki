@@ -15,6 +15,7 @@ import (
 	"github.com/OpceanAI/Doki/pkg/network"
 	"github.com/OpceanAI/Doki/pkg/runtime"
 	"github.com/OpceanAI/Doki/pkg/storage"
+	"github.com/OpceanAI/Doki/pkg/volume"
 )
 
 func main() {
@@ -148,7 +149,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	rt := runtime.NewRuntime(cfg.ExecRoot, storeMgr)
+	volumeMgr, err := volume.NewManager(filepath.Join(dataDir, "volumes"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Volume error: %v\n", err)
+		os.Exit(1)
+	}
+
+	rt := runtime.NewRuntime(cfg.ExecRoot, storeMgr, runtime.WithVolumeResolver(volumeMgr))
 
 	projectName := projFlag
 	if projectName == "" {

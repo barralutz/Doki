@@ -128,10 +128,9 @@ func (s *Server) handleVolumesPrune(w http.ResponseWriter, _ *http.Request) {
 }
 
 // NewServer creates a new API server.
-func NewServer(config *common.DokiConfig, rt *dokiruntime.Runtime, img *image.Store, net *network.Manager) (*Server, error) {
-	volumes, err := volume.NewManager(filepath.Join(config.DataDir, "volumes"))
-	if err != nil {
-		return nil, fmt.Errorf("volume manager: %w", err)
+func NewServer(config *common.DokiConfig, rt *dokiruntime.Runtime, img *image.Store, net *network.Manager, volumes *volume.Manager) (*Server, error) {
+	if volumes == nil {
+		return nil, fmt.Errorf("volume manager is required")
 	}
 	s := &Server{
 		config:    config,

@@ -123,3 +123,24 @@ func TestContainerCreateAutoCreatesNamedVolumeFromHostConfigBinds(t *testing.T) 
 		t.Fatalf("named volume was not auto-created: %v", err)
 	}
 }
+
+func TestNewServerUsesInjectedVolumeManager(t *testing.T) {
+	root := t.TempDir()
+	store, err := image.NewStore(filepath.Join(root, "images"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := dokiruntime.NewRuntime(filepath.Join(root, "runtime"), nil)
+	vm, err := volume.NewManager(filepath.Join(root, "volumes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewServer(&common.DokiConfig{DataDir: root}, rt, store, nil, vm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.volumes != vm {
+		t.Fatal("NewServer did not retain the injected volume manager instance")
+	}
+}
