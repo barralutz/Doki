@@ -842,6 +842,7 @@ The script must use a temporary Compose project with an ordinary image that can 
 services:
   writer:
     image: alpine:latest
+    network_mode: host
     command: ["sh", "-c", "echo persisted > /data/probe.txt && sleep 30"]
     volumes:
       - probe_data:/data
@@ -849,7 +850,7 @@ volumes:
   probe_data:
 ```
 
-The script sets only `DOCKER_HOST` to the Doki socket; it must not use Doki CLI internals for lifecycle operations.
+The script sets only `DOCKER_HOST` to the Doki socket; it must not use Doki CLI internals for lifecycle operations. Use `network_mode: host` in this Phase 1 fixture so unrelated Compose-network lifecycle defects cannot mask named-volume behavior; default-network conformance is tested in the networking phase.
 
 - [ ] **Step 2: Script persistence assertions**
 
