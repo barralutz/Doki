@@ -3,6 +3,7 @@ package postgresql
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	dr "github.com/OpceanAI/Doki/pkg/runtime"
@@ -56,12 +57,111 @@ func (p *Provider) Ensure(ctx context.Context, desc dr.WorkloadDescriptor) error
 	return err
 }
 
-func (p *Provider) Prepare(context.Context, dr.WorkloadDescriptor) (*dr.PreparedWorkload, error) {
-	return nil, fmt.Errorf("PostgreSQL provider prepare is not implemented")
+func (p *Provider) Prepare(ctx context.Context, desc dr.WorkloadDescriptor) (*dr.PreparedWorkload, error) {
+	contract, err := imageContractFromDescriptor(desc)
+	if err != nil {
+		return nil, err
+	}
+	if p.provisioner == nil {
+		return nil, fmt.Errorf("PostgreSQL provider provisioner is not configured")
+	}
+	paths, err := p.provisioner.Ensure(ctx, contract)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := clusterConfigFromDescriptor(desc)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.ensureCluster(ctx, paths, cfg); err != nil {
+		return nil, err
+	}
+	args, err := postgresServerArgs(desc.Args)
+	if err != nil {
+		return nil, err
+	}
+	return &dr.PreparedWorkload{
+		Executable: paths.Postgres,
+		Args:       args,
+		Env:        providerProcessEnv(paths, cfg.PGData, "", 0, p.effectiveTermuxPrefix()),
+		Cwd:        "/",
+	}, nil
 }
 
-func (p *Provider) PrepareExec(context.Context, dr.WorkloadDescriptor, *dr.ExecConfig) (*dr.PreparedExec, error) {
-	return nil, fmt.Errorf("PostgreSQL provider exec is not implemented")
+func (p *Provider) PrepareExec(ctx context.Context, desc dr.WorkloadDescriptor, cfg *dr.ExecConfig) (*dr.PreparedExec, error) {
+	if cfg == nil || len(cfg.Args) == 0 {
+		return nil, fmt.Errorf("PostgreSQL provider exec requires a command")
+	}
+	if cfg.WorkingDir != "" && cfg.WorkingDir != "/" {
+		return nil, fmt.Errorf("PostgreSQL provider exec does not support container working directory %q", cfg.WorkingDir)
+	}
+	contract, err := imageContractFromDescriptor(desc)
+	if err != nil {
+		return nil, err
+	}
+	if p.provisioner == nil {
+		return nil, fmt.Errorf("PostgreSQL provider provisioner is not configured")
+	}
+	paths, err := p.provisioner.Ensure(ctx, contract)
+	if err != nil {
+		return nil, err
+	}
+	cluster, err := clusterConfigFromDescriptor(desc)
+	if err != nil {
+		return nil, err
+	}
+
+	first := cfg.Args[0]
+	base := filepath.Base(first)
+	var executable string
+	switch base {
+	case "pg_isready":
+		executable = paths.PgIsReady
+	case "psql":
+		executable = paths.Psql
+	case "postgres":
+		executable = paths.Postgres
+	case "sh":
+		if first != "sh" && first != "/bin/sh" && first != filepath.Join(p.effectiveTermuxPrefix(), "bin", "sh") {
+			return nil, fmt.Errorf("PostgreSQL provider exec rejects shell path %q", first)
+		}
+		executable = filepath.Join(p.effectiveTermuxPrefix(), "bin", "sh")
+	default:
+		return nil, fmt.Errorf("PostgreSQL provider exec command %q is not supported", first)
+	}
+
+	env := append([]string(nil), cfg.Env...)
+	env = append(env, providerProcessEnv(paths, cluster.PGData, "", 0, p.effectiveTermuxPrefix())...)
+	return &dr.PreparedExec{
+		Executable: executable,
+		Args:       append([]string(nil), cfg.Args[1:]...),
+		Env:        env,
+		Cwd:        "/",
+	}, nil
+}
+
+func postgresServerArgs(args []string) ([]string, error) {
+	argv := append([]string(nil), args...)
+	if len(argv) > 0 && filepath.Base(argv[0]) == "docker-entrypoint.sh" {
+		argv = argv[1:]
+	}
+	if len(argv) == 0 {
+		return nil, nil
+	}
+	if filepath.Base(argv[0]) == "postgres" {
+		return argv[1:], nil
+	}
+	if strings.HasPrefix(argv[0], "-") {
+		return argv, nil
+	}
+	return nil, fmt.Errorf("PostgreSQL provider does not support image command %q; expected postgres", argv[0])
+}
+
+func (p *Provider) effectiveTermuxPrefix() string {
+	if strings.TrimSpace(p.termuxPrefix) != "" {
+		return p.termuxPrefix
+	}
+	return "/data/data/com.termux/files/usr"
 }
 
 func (p *Provider) Cleanup(context.Context, dr.WorkloadDescriptor) error { return nil }

@@ -173,7 +173,7 @@ func (p *Provider) ensureCluster(ctx context.Context, paths RuntimePaths, cfg cl
 		return fmt.Errorf("close PostgreSQL password file: %w", err)
 	}
 
-	env := providerProcessEnv(paths, cfg.PGData, "", 0)
+	env := providerProcessEnv(paths, cfg.PGData, "", 0, p.effectiveTermuxPrefix())
 	if _, err := p.clusterRunner.Run(ctx, "/", "", env, paths.InitDB,
 		"-D", cfg.PGData,
 		"--username="+cfg.User,
@@ -218,12 +218,12 @@ func quoteSQLIdentifier(value string) (string, error) {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`, nil
 }
 
-func providerProcessEnv(paths RuntimePaths, pgdata, host string, port uint16) []string {
-	pathValue := paths.BinDir + ":/data/data/com.termux/files/usr/bin:/system/bin"
+func providerProcessEnv(paths RuntimePaths, pgdata, host string, port uint16, termuxPrefix string) []string {
+	pathValue := paths.BinDir + ":" + filepath.Join(termuxPrefix, "bin") + ":/system/bin"
 	env := []string{
 		"PATH=" + pathValue,
 		"PGDATA=" + pgdata,
-		"LD_LIBRARY_PATH=" + filepath.Join(paths.Root, "lib") + ":/data/data/com.termux/files/usr/lib",
+		"LD_LIBRARY_PATH=" + filepath.Join(paths.Root, "lib") + ":" + filepath.Join(termuxPrefix, "lib"),
 	}
 	if host != "" {
 		env = append(env, "PGHOST="+host)
