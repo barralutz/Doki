@@ -211,3 +211,42 @@ func TestPrepareNamedVolumesDoesNotSeedNonEmptyVolume(t *testing.T) {
 		t.Fatalf("existing data changed: %q err=%v", got, err)
 	}
 }
+
+func TestBuildProotExecArgsIncludesNamedVolume(t *testing.T) {
+	rootfs := t.TempDir()
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{"db": "/host/volumes/db/_data"}))
+	mounts := []common.Mount{{Type: common.MountVolume, Source: "db", Target: "/data"}}
+
+	got, err := rt.buildProotExecArgs(rootfs, mounts, "", "", []string{"cat", "/data/probe.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMount := "/host/volumes/db/_data:/data"
+	foundMount := false
+	foundWD := false
+	for i := 0; i+1 < len(got); i++ {
+		if got[i] == "-b" && got[i+1] == wantMount {
+			foundMount = true
+		}
+		if got[i] == "-w" && got[i+1] == "/" {
+			foundWD = true
+		}
+	}
+	if !foundMount {
+		t.Fatalf("exec args = %#v, missing named-volume bind %q", got, wantMount)
+	}
+	if !foundWD {
+		t.Fatalf("exec args = %#v, missing default guest cwd /", got)
+	}
+	if len(got) < 2 || got[len(got)-2] != "cat" || got[len(got)-1] != "/data/probe.txt" {
+		t.Fatalf("exec command tail = %#v", got)
+	}
+}
+
+func TestBuildProotExecArgsRejectsMissingNamedVolume(t *testing.T) {
+	rt := NewRuntime(t.TempDir(), nil, WithVolumeResolver(fakeVolumeResolver{}))
+	_, err := rt.buildProotExecArgs(t.TempDir(), []common.Mount{{Type: common.MountVolume, Source: "missing", Target: "/data"}}, "", "", []string{"true"})
+	if err == nil || !strings.Contains(err.Error(), `resolve named volume "missing"`) {
+		t.Fatalf("error = %v", err)
+	}
+}

@@ -1532,15 +1532,14 @@ func (rt *Runtime) Exec(id string, args []string, env []string, workingDir, user
 		if rootfsDir == "" || !common.PathExists(rootfsDir) {
 			return nil, nil, fmt.Errorf("rootfs not found for container %s", id)
 		}
-		uid, gid := parseUser(user)
-		prootArgs, err := proot.BuildProotBaseArgs(rootfsDir, uid, gid)
+		var mounts []common.Mount
+		if state.Config != nil {
+			mounts = state.Config.Mounts
+		}
+		prootArgs, err := rt.buildProotExecArgs(rootfsDir, mounts, workingDir, user, args)
 		if err != nil {
 			return nil, nil, err
 		}
-		if workingDir != "" {
-			prootArgs = append(prootArgs, "-w", workingDir)
-		}
-		prootArgs = append(prootArgs, args...)
 		prootBin := proot.FindProotBinary()
 		if prootBin == "" {
 			return nil, nil, fmt.Errorf("proot: no usable proot binary found")
@@ -1663,24 +1662,20 @@ func (rt *Runtime) ExecAttach(containerID string, args []string, env []string, w
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
 
+	var setupErr error
 	makeCmd := func() *exec.Cmd {
 		var cmd *exec.Cmd
 		switch rt.mode {
 		case ModeProot:
-			uid, gid := parseUser(user)
-			prootArgs, perr := proot.BuildProotBaseArgs(rootfsDir, uid, gid)
+			var mounts []common.Mount
+			if state.Config != nil {
+				mounts = state.Config.Mounts
+			}
+			prootArgs, perr := rt.buildProotExecArgs(rootfsDir, mounts, workingDir, user, args)
 			if perr != nil {
+				setupErr = perr
 				return nil
 			}
-			// Default the guest working directory to "/". Without -w, proot
-			// inherits the daemon's host cwd, which does not exist inside the
-			// guest rootfs and emits a "can't chdir" warning on every exec.
-			guestWD := workingDir
-			if guestWD == "" {
-				guestWD = "/"
-			}
-			prootArgs = append(prootArgs, "-w", guestWD)
-			prootArgs = append(prootArgs, args...)
 			prootBin := proot.FindProotBinary()
 			if prootBin == "" {
 				return nil
@@ -1719,6 +1714,13 @@ func (rt *Runtime) ExecAttach(containerID string, args []string, env []string, w
 	}
 
 	cmd := makeCmd()
+	if setupErr != nil {
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		return nil, setupErr
+	}
 	if cmd == nil {
 		// VM / QEMU / FEX modes don't support direct attach; fall back
 		// to buffered Exec by running once with empty pipes and
