@@ -670,7 +670,7 @@ docker compose -f /root/mipctemuco/docker-compose.yml exec -T postgres pg_isread
 
 Confirm host port 5750 accepts a real SQL query and named-volume data survives recreate.
 
-- [ ] **Step 7: Append verification record, commit, push, compare SHA**
+- [x] **Step 7: Append verification record, commit, push, compare SHA**
 
 Record exact PostgreSQL version, source SHA, daemon SHA, conformance results, and any source-build duration-independent evidence. Then:
 
@@ -685,9 +685,9 @@ test "$LOCAL" = "$REMOTE"
 
 Do not begin Phase 4 until the local/remote SHA match and all Phase 3 gates above are freshly green.
 
-## Phase 3 pre-push verification record — 2026-08-22 UTC
+## Phase 3 verification record — 2026-08-22 UTC
 
-Phase 3 functional verification was completed on the physical Android `android-freecad` node. Phase 4 / MinIO was not started. Step 7 remains open until the verification commit is pushed and local/remote branch SHAs match.
+Phase 3 functional verification was completed on the physical Android `android-freecad` node. Phase 4 / MinIO was not started. Verification commit `f6d72b33e8f125b279af1c462fcb1efaba06b826` was pushed to `origin/feat/android-docker-compose` and the local/remote SHAs matched exactly before this checklist close-out.
 
 ### Exact PostgreSQL provider
 
