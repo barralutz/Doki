@@ -22,10 +22,12 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"os/signal"
 	"path/filepath"
 	r "runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/OpceanAI/Doki/internal/dokivm"
@@ -82,9 +84,6 @@ func init() {
 		dnsListen = "127.0.0.11:53"
 	}
 }
-
-// rootCtx is cancelled on signal for graceful shutdown.
-var rootCtx, rootCancel = context.WithCancel(context.Background())
 
 func main() {
 	flag.StringVar(&socketPath, "socket", "", "Unix socket path")
@@ -401,9 +400,23 @@ func main() {
 		"images", countImages(imgStore),
 	)
 
-	go api.WaitForSignal(rootCancel)
-	<-rootCtx.Done()
-	logger.Info("shutdown signal received")
+	signalCh := make(chan os.Signal, 4)
+	signal.Notify(signalCh, daemonSignals()...)
+	action := waitForDaemonAction(
+		signalCh,
+		func() (string, error) {
+			currentExecutable, err := os.Executable()
+			if err != nil {
+				return "", fmt.Errorf("resolve current dokid executable: %w", err)
+			}
+			return resolveDaemonReexecTarget(currentExecutable)
+		},
+		func(err error) {
+			logger.Warn("native reexec request rejected", "err", err)
+		},
+	)
+	signal.Stop(signalCh)
+	logger.Info("shutdown signal received", "signal", fmt.Sprint(action.signal), "reexec", action.kind == daemonActionReexec)
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutCancel()
@@ -415,7 +428,14 @@ func main() {
 			logger.Warn("CRI shutdown", "err", err)
 		}
 	}
-	rootCancel()
+	if action.kind == daemonActionReexec {
+		logger.Info("reexec dokid", "target", action.target)
+		if err := execDaemon(action.target, os.Args, os.Environ(), syscall.Exec); err != nil {
+			logger.Error("reexec dokid", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	logger.Info("dokid stopped")
 }
 

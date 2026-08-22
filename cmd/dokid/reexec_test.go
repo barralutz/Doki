@@ -163,3 +163,11 @@ func TestExecDaemonPreservesTargetArgsAndEnvironment(t *testing.T) {
 		t.Fatalf("env=%q want=%q", gotEnv, env)
 	}
 }
+
+func TestDaemonSignalsIncludeShutdownAndReexecSignals(t *testing.T) {
+	got := daemonSignals()
+	want := []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("daemon signals=%v want=%v", got, want)
+	}
+}

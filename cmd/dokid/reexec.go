@@ -95,3 +95,7 @@ func execDaemon(target string, args, env []string, execFn func(string, []string,
 	}
 	return nil
 }
+
+func daemonSignals() []os.Signal {
+	return []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR2}
+}
