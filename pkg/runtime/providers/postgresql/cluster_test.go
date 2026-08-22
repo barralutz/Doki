@@ -146,8 +146,8 @@ func TestEnsureClusterInitializesEmptyDataDirectoryOnce(t *testing.T) {
 	if err := p.ensureCluster(context.Background(), paths, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("calls=%+v, want initdb only because database=user", runner.calls)
+	if len(runner.calls) != 2 {
+		t.Fatalf("calls=%+v, want initdb + requested database creation", runner.calls)
 	}
 	call := runner.calls[0]
 	if call.name != paths.InitDB || call.password != "secret\n" || call.pwfileMode != 0600 {
@@ -161,6 +161,13 @@ func TestEnsureClusterInitializesEmptyDataDirectoryOnce(t *testing.T) {
 	}
 	if strings.Contains(joined, "secret") {
 		t.Fatalf("password leaked into argv: %q", joined)
+	}
+	dbCall := runner.calls[1]
+	if dbCall.name != paths.Postgres || !strings.Contains(strings.Join(dbCall.args, " "), "--single") {
+		t.Fatalf("database creation call=%+v", dbCall)
+	}
+	if dbCall.stdin != "CREATE DATABASE \"techservice\" OWNER \"techservice\";\n" {
+		t.Fatalf("database creation SQL=%q", dbCall.stdin)
 	}
 }
 

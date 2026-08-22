@@ -192,7 +192,7 @@ func (p *Provider) ensureCluster(ctx context.Context, paths RuntimePaths, cfg cl
 		return fmt.Errorf("PostgreSQL initdb created major version %s but image requires %s", got, cfg.Major)
 	}
 
-	if cfg.Database != cfg.User {
+	if cfg.Database != "postgres" {
 		db, err := quoteSQLIdentifier(cfg.Database)
 		if err != nil {
 			return err
