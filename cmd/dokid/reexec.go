@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 func resolveDaemonReexecTarget(currentExecutable string) (string, error) {
@@ -56,4 +57,34 @@ func resolveDaemonReexecTarget(currentExecutable string) (string, error) {
 		return "", fmt.Errorf("dokid reexec target is already running: %s", resolved)
 	}
 	return resolved, nil
+}
+
+type daemonActionKind int
+
+const (
+	daemonActionShutdown daemonActionKind = iota
+	daemonActionReexec
+)
+
+type daemonAction struct {
+	kind   daemonActionKind
+	target string
+	signal os.Signal
+}
+
+func waitForDaemonAction(signals <-chan os.Signal, resolve func() (string, error), onReexecError func(error)) daemonAction {
+	for sig := range signals {
+		if sig != syscall.SIGUSR2 {
+			return daemonAction{kind: daemonActionShutdown, signal: sig}
+		}
+		target, err := resolve()
+		if err != nil {
+			if onReexecError != nil {
+				onReexecError(err)
+			}
+			continue
+		}
+		return daemonAction{kind: daemonActionReexec, target: target, signal: sig}
+	}
+	return daemonAction{kind: daemonActionShutdown}
 }

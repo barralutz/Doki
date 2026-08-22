@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -85,4 +88,48 @@ func TestResolveDaemonReexecTargetRejectsUnsafeCandidates(t *testing.T) {
 			t.Fatal("current executable unexpectedly accepted as reexec target")
 		}
 	})
+}
+
+func TestWaitForDaemonActionInvalidReexecContinuesToShutdownSignal(t *testing.T) {
+	signals := make(chan os.Signal, 2)
+	signals <- syscall.SIGUSR2
+	signals <- syscall.SIGTERM
+
+	var reported error
+	action := waitForDaemonAction(
+		signals,
+		func() (string, error) { return "", errors.New("unsafe target") },
+		func(err error) { reported = err },
+	)
+
+	if reported == nil || !strings.Contains(reported.Error(), "unsafe target") {
+		t.Fatalf("reexec error not reported: %v", reported)
+	}
+	if action.kind != daemonActionShutdown {
+		t.Fatalf("action kind=%v want shutdown", action.kind)
+	}
+	if action.signal != syscall.SIGTERM {
+		t.Fatalf("action signal=%v want SIGTERM", action.signal)
+	}
+}
+
+func TestWaitForDaemonActionValidReexecSelectsTarget(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGUSR2
+
+	action := waitForDaemonAction(
+		signals,
+		func() (string, error) { return "/tmp/dokid-v2", nil },
+		nil,
+	)
+
+	if action.kind != daemonActionReexec {
+		t.Fatalf("action kind=%v want reexec", action.kind)
+	}
+	if action.target != "/tmp/dokid-v2" {
+		t.Fatalf("action target=%q want /tmp/dokid-v2", action.target)
+	}
+	if action.signal != syscall.SIGUSR2 {
+		t.Fatalf("action signal=%v want SIGUSR2", action.signal)
+	}
 }
