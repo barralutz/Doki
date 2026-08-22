@@ -249,6 +249,7 @@ func TestNativeSourceBuilderUsesVendoredAndroidPatchesAndTermuxToolchain(t *test
 			for _, required := range []string{
 				"USE_UNNAMED_POSIX_SEMAPHORES=1",
 				"ac_cv_func_sync_file_range=no",
+				"ac_cv_func_syncfs=no",
 				"--host=" + mustAndroidHostTriple(t, runtime.GOARCH),
 				filepath.Join(prefix, "bin", "sh") + " " + filepath.Join(stage, "src", "configure"),
 				"--with-icu",

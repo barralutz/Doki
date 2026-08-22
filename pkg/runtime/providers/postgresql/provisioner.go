@@ -297,6 +297,7 @@ func (b *nativeSourceBuilder) Build(ctx context.Context, archivePath, installDir
 		"--with-uuid=e2fs",
 		"USE_UNNAMED_POSIX_SEMAPHORES=1",
 		"ac_cv_func_sync_file_range=no",
+		"ac_cv_func_syncfs=no",
 		"pgac_cv_prog_cc_LDFLAGS_EX_BE__Wl___export_dynamic=yes",
 		"pgac_cv_prog_cc_LDFLAGS__Wl___as_needed=yes",
 	)
