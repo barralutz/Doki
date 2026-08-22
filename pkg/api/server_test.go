@@ -317,3 +317,40 @@ func TestBuildAcceptsDockerTarContextBody(t *testing.T) {
 		t.Fatal("built image docker-body-test:latest was not persisted")
 	}
 }
+
+func TestVolumesListHonorsComposeLabelFilters(t *testing.T) {
+	vm, err := volume.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.Create("mipctemuco_postgres_data", "local", nil, map[string]string{
+		"com.docker.compose.project": "mipctemuco",
+		"com.docker.compose.volume":  "postgres_data",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.Create("pgprovider_postgres_data", "local", nil, map[string]string{
+		"com.docker.compose.project": "pgprovider",
+		"com.docker.compose.volume":  "postgres_data",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{volumes: vm}
+	filters := `%7B%22label%22%3A%5B%22com.docker.compose.project%3Dpgprovider%22%2C%22com.docker.compose.volume%3Dpostgres_data%22%5D%7D`
+	req := httptest.NewRequest(http.MethodGet, "/volumes?filters="+filters, nil)
+	rr := httptest.NewRecorder()
+	s.handleVolumesList(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Volumes []*common.VolumeInfo `json:"Volumes"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Volumes) != 1 || body.Volumes[0].Name != "pgprovider_postgres_data" {
+		t.Fatalf("filtered volumes=%+v, want only pgprovider_postgres_data", body.Volumes)
+	}
+}

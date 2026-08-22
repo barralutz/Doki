@@ -2992,14 +2992,70 @@ func (s *Server) handleNetworksPrune(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handleVolumesList(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleVolumesList(w http.ResponseWriter, r *http.Request) {
 	vols := s.volumes.List()
+	if raw := strings.TrimSpace(r.URL.Query().Get("filters")); raw != "" {
+		var filters map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &filters); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid volume filters")
+			return
+		}
+		labels, err := dockerFilterValues(filters["label"])
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid volume label filters")
+			return
+		}
+		if len(labels) > 0 {
+			filtered := make([]*common.VolumeInfo, 0, len(vols))
+			for _, vol := range vols {
+				if volumeMatchesLabels(vol, labels) {
+					filtered = append(filtered, vol)
+				}
+			}
+			vols = filtered
+		}
+	}
 	if vols == nil {
 		vols = []*common.VolumeInfo{}
 	}
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"Volumes": vols,
 	})
+}
+
+func dockerFilterValues(raw json.RawMessage) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err == nil {
+		return values, nil
+	}
+	var enabled map[string]bool
+	if err := json.Unmarshal(raw, &enabled); err != nil {
+		return nil, err
+	}
+	values = make([]string, 0, len(enabled))
+	for value, include := range enabled {
+		if include {
+			values = append(values, value)
+		}
+	}
+	return values, nil
+}
+
+func volumeMatchesLabels(vol *common.VolumeInfo, labels []string) bool {
+	if vol == nil {
+		return false
+	}
+	for _, filter := range labels {
+		key, value, hasValue := strings.Cut(filter, "=")
+		got, exists := vol.Labels[key]
+		if !exists || (hasValue && got != value) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleVolumeCreate(w http.ResponseWriter, r *http.Request) {
