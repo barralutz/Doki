@@ -141,7 +141,7 @@ func (rt *Runtime) prepareAndroidNativeExec(state *ContainerState, cfg *ExecConf
 		return nil, fmt.Errorf("provider executable must be absolute: %q", prepared.Executable)
 	}
 	cmd := exec.Command(prepared.Executable, prepared.Args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Env = append([]string(nil), prepared.Env...)
 	cmd.Dir = prepared.Cwd
 	if cmd.Dir == "" {

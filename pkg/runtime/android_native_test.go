@@ -16,6 +16,7 @@ import (
 
 	"github.com/OpceanAI/Doki/internal/cgroups"
 	"github.com/OpceanAI/Doki/pkg/common"
+	"golang.org/x/sys/unix"
 )
 
 func TestResolvedDescriptorResolvesNamedVolumeWithoutMutatingConfig(t *testing.T) {
@@ -225,6 +226,35 @@ func TestAndroidNativeExecAttachUsesDedicatedProcessGroup(t *testing.T) {
 	parentPGID := syscall.Getpgrp()
 	if gotPGID == parentPGID {
 		t.Fatalf("Android-native exec inherited daemon/test process group: pid=%d pgid=%d parent_pgid=%d", res.Pid, gotPGID, parentPGID)
+	}
+}
+
+func TestAndroidNativeExecAttachUsesDedicatedSession(t *testing.T) {
+	p := &fakeAndroidProvider{
+		id: "fake", match: ProviderMatch{Matched: true, Required: true},
+		prepared:     &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		preparedExec: &PreparedExec{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	rt, state := newRunningAndroidProviderRuntime(t, p)
+	res, err := rt.ExecAttach(state.ID, []string{"sleep", "30"}, nil, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(res.Pid, syscall.SIGKILL)
+		_ = res.Wait()
+	})
+
+	childSID, err := unix.Getsid(res.Pid)
+	if err != nil {
+		t.Fatalf("Getsid(%d): %v", res.Pid, err)
+	}
+	parentSID, err := unix.Getsid(0)
+	if err != nil {
+		t.Fatalf("Getsid(parent): %v", err)
+	}
+	if childSID == parentSID {
+		t.Fatalf("Android-native exec inherited daemon/test session: pid=%d sid=%d parent_sid=%d", res.Pid, childSID, parentSID)
 	}
 }
 
