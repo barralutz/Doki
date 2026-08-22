@@ -640,20 +640,21 @@ func (s *Server) handleContainersList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleContainerCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Image         string             `json:"Image"`
-		Cmd           []string           `json:"Cmd"`
-		Entrypoint    []string           `json:"Entrypoint"`
-		Env           []string           `json:"Env"`
-		Tty           bool               `json:"Tty"`
-		OpenStdin     bool               `json:"OpenStdin"`
-		AttachStdin   bool               `json:"AttachStdin"`
-		WorkingDir    string             `json:"WorkingDir"`
-		Hostname      string             `json:"Hostname"`
-		Domainname    string             `json:"Domainname"`
-		User          string             `json:"User"`
-		HostConfig    *common.HostConfig `json:"HostConfig"`
-		Labels        map[string]string  `json:"Labels"`
-		ContainerName string             `json:"Name,omitempty"`
+		Image         string                   `json:"Image"`
+		Cmd           []string                 `json:"Cmd"`
+		Entrypoint    []string                 `json:"Entrypoint"`
+		Env           []string                 `json:"Env"`
+		Tty           bool                     `json:"Tty"`
+		OpenStdin     bool                     `json:"OpenStdin"`
+		AttachStdin   bool                     `json:"AttachStdin"`
+		WorkingDir    string                   `json:"WorkingDir"`
+		Hostname      string                   `json:"Hostname"`
+		Domainname    string                   `json:"Domainname"`
+		User          string                   `json:"User"`
+		HostConfig    *common.HostConfig       `json:"HostConfig"`
+		Healthcheck   *image.HealthCheckConfig `json:"Healthcheck"`
+		Labels        map[string]string        `json:"Labels"`
+		ContainerName string                   `json:"Name,omitempty"`
 	}
 
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody)).Decode(&req); err != nil {
@@ -800,6 +801,18 @@ func (s *Server) handleContainerCreate(w http.ResponseWriter, r *http.Request) {
 				Retries:     imgRecord.Config.Config.HealthCheck.Retries,
 				StartPeriod: time.Duration(imgRecord.Config.Config.HealthCheck.StartPeriod) * time.Nanosecond,
 			}
+		}
+	}
+
+	// A container-create Healthcheck overrides the image default, matching
+	// Docker Engine semantics used by Compose.
+	if req.Healthcheck != nil {
+		cfg.HealthCheck = &dokiruntime.HealthCheckConfig{
+			Test:        append([]string(nil), req.Healthcheck.Test...),
+			Interval:    time.Duration(req.Healthcheck.Interval) * time.Nanosecond,
+			Timeout:     time.Duration(req.Healthcheck.Timeout) * time.Nanosecond,
+			Retries:     req.Healthcheck.Retries,
+			StartPeriod: time.Duration(req.Healthcheck.StartPeriod) * time.Nanosecond,
 		}
 	}
 
@@ -1048,6 +1061,9 @@ func (s *Server) handleContainerInspect(w http.ResponseWriter, _ *http.Request, 
 	if !state.Finished.IsZero() {
 		stateObj["FinishedAt"] = state.Finished.UTC().Format(time.RFC3339Nano)
 	}
+	if state.HealthStatus != nil {
+		stateObj["Health"] = state.HealthStatus
+	}
 	m["State"] = stateObj
 
 	// Docker container inspect returns Created as an RFC3339 timestamp string.
@@ -1067,6 +1083,27 @@ func (s *Server) handleContainerInspect(w http.ResponseWriter, _ *http.Request, 
 	if networks, ok := networkSettings["Networks"].(map[string]interface{}); !ok || networks == nil {
 		networkSettings["Networks"] = map[string]interface{}{}
 	}
+	portMap := common.PortMap{}
+	if state.Config != nil {
+		for _, port := range state.Config.Ports {
+			proto := port.Type
+			if proto == "" {
+				proto = common.ProtocolTCP
+			}
+			key := fmt.Sprintf("%d/%s", port.PrivatePort, proto)
+			if port.PublicPort == 0 {
+				if _, exists := portMap[key]; !exists {
+					portMap[key] = nil
+				}
+				continue
+			}
+			portMap[key] = append(portMap[key], common.PortBinding{
+				HostIP:   port.IP,
+				HostPort: strconv.Itoa(int(port.PublicPort)),
+			})
+		}
+	}
+	networkSettings["Ports"] = portMap
 
 	// Ensure ImageID, ImageDigest, and Name are always present.
 	if state.Config != nil && state.Config.ImageDigest != "" {
