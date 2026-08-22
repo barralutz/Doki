@@ -144,6 +144,9 @@ func (p *Provider) PrepareExec(ctx context.Context, desc dr.WorkloadDescriptor, 
 		return nil, err
 	}
 	env := append([]string(nil), cfg.Env...)
+	if _, ok := envMap(env)["PGPASSWORD"]; !ok && cluster.Password != "" {
+		env = append(env, "PGPASSWORD="+cluster.Password)
+	}
 	env = append(env, providerProcessEnv(paths, cluster.PGData, host, privatePort, p.effectiveTermuxPrefix())...)
 	return &dr.PreparedExec{
 		Executable: executable,

@@ -239,6 +239,21 @@ func TestProviderPrepareExecUsesExactRuntimeUtilities(t *testing.T) {
 	}
 }
 
+func TestProviderPrepareExecSuppliesContainerPasswordForPrivateTCP(t *testing.T) {
+	desc := existingPostgresDescriptor(t)
+	paths := fakeRuntimePaths("/provider/16.15")
+	p := &Provider{provisioner: &fakeRuntimeProvisioner{paths: paths}, clusterRunner: &fakeClusterRunner{}, termuxPrefix: "/termux"}
+
+	prepared, err := p.PrepareExec(context.Background(), desc, &dr.ExecConfig{Args: []string{"psql", "-U", "techservice", "-d", "techservice"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(prepared.Env, "\n")
+	if !strings.Contains(joined, "PGPASSWORD=secret") {
+		t.Fatalf("env=%q missing PGPASSWORD derived from container POSTGRES_PASSWORD", joined)
+	}
+}
+
 func TestProviderPrepareExecMapsHealthcheckShellToTermux(t *testing.T) {
 	desc := existingPostgresDescriptor(t)
 	paths := fakeRuntimePaths("/provider/16.15")
