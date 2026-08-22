@@ -708,3 +708,77 @@ func TestAndroidNativePortForwardLifecycle(t *testing.T) {
 		}
 	})
 }
+
+func TestAndroidNativeStopSuppressesUnlessStoppedRestart(t *testing.T) {
+	p := &fakeAndroidProvider{
+		id: "fake", match: ProviderMatch{Matched: true, Required: true},
+		prepared: &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	reg := NewAndroidProviderRegistry()
+	if err := reg.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+	state, err := rt.Create(&Config{ID: "unless-stopped-manual", ImageRef: "example:1", RestartPolicy: common.RestartUnlessStopped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Start(state.ID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = rt.Kill(state.ID, syscall.SIGKILL)
+		_ = rt.Delete(state.ID, true)
+	})
+
+	if err := rt.Stop(state.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+
+	current, err := rt.State(state.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status == common.StateRunning || current.RestartCount != 0 {
+		t.Fatalf("manual stop restarted unless-stopped container: status=%s restartCount=%d pid=%d", current.Status, current.RestartCount, current.Pid)
+	}
+
+	if err := rt.Start(state.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err = rt.State(state.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.ManuallyStopped {
+		t.Fatal("explicit Start did not clear manual-stop restart suppression")
+	}
+}
+
+func TestMonitorProcessDoesNotResurrectDeletedContainer(t *testing.T) {
+	rt := NewRuntime(t.TempDir(), nil)
+	cmd := exec.Command("/bin/true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	state := &ContainerState{
+		ID:       "deleted-monitor",
+		Status:   common.StateRunning,
+		Config:   &Config{},
+		Cmd:      cmd,
+		ExitChan: make(chan struct{}),
+	}
+	if err := rt.saveState(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(rt.root, "containers", state.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	rt.monitorProcess(state, nil)
+
+	if _, err := rt.State(state.ID); !common.IsNotFound(err) {
+		t.Fatalf("monitorProcess resurrected deleted container: err=%v", err)
+	}
+}

@@ -211,22 +211,23 @@ type ImageOCIConfig struct {
 
 // ContainerState represents the current state of a container persisted to disk.
 type ContainerState struct {
-	ID           string                `json:"id"`
-	Pid          int                   `json:"pid"`
-	Status       common.ContainerState `json:"status"`
-	Created      time.Time             `json:"created"`
-	Started      time.Time             `json:"started,omitempty"`
-	Finished     time.Time             `json:"finished,omitempty"`
-	ExitCode     int                   `json:"exitCode,omitempty"`
-	Bundle       string                `json:"bundle"`
-	Config       *Config               `json:"config,omitempty"`
-	PidPath      string                `json:"pidPath,omitempty"`
-	LogPath      string                `json:"logPath,omitempty"`
-	Mode         ExecutionMode         `json:"mode"`
-	RestartCount int                   `json:"restartCount,omitempty"`
-	HealthStatus *common.HealthStatus  `json:"healthStatus,omitempty"`
-	ExitChan     chan struct{}         `json:"-"`
-	Cmd          *exec.Cmd             `json:"-"`
+	ID              string                `json:"id"`
+	Pid             int                   `json:"pid"`
+	Status          common.ContainerState `json:"status"`
+	Created         time.Time             `json:"created"`
+	Started         time.Time             `json:"started,omitempty"`
+	Finished        time.Time             `json:"finished,omitempty"`
+	ExitCode        int                   `json:"exitCode,omitempty"`
+	Bundle          string                `json:"bundle"`
+	Config          *Config               `json:"config,omitempty"`
+	PidPath         string                `json:"pidPath,omitempty"`
+	LogPath         string                `json:"logPath,omitempty"`
+	Mode            ExecutionMode         `json:"mode"`
+	RestartCount    int                   `json:"restartCount,omitempty"`
+	ManuallyStopped bool                  `json:"manuallyStopped,omitempty"`
+	HealthStatus    *common.HealthStatus  `json:"healthStatus,omitempty"`
+	ExitChan        chan struct{}         `json:"-"`
+	Cmd             *exec.Cmd             `json:"-"`
 	// io brokers live interactive stdio (pty or pipes) for `run -it`/`run -i`.
 	// Like Cmd it is never persisted: it only exists while the process is a
 	// child of this daemon instance.
@@ -988,6 +989,7 @@ func (rt *Runtime) Start(id string) error {
 
 	state.Pid = pid
 	state.Status = common.StateRunning
+	state.ManuallyStopped = false
 	state.Started = time.Now()
 	state.Cmd = proc
 	state.PidPath = filepath.Join(rt.root, "containers", state.ID, "init.pid")
@@ -1064,23 +1066,33 @@ func (rt *Runtime) monitorProcess(state *ContainerState, logFile *os.File) {
 	// Stop the health checker before marking the container as exited.
 	rt.stopHealthchecker(state.ID)
 
-	// Lock for state modification and persistence only.
+	// Lock for state modification and persistence only. Reload the latest
+	// persisted state so Stop/Start flags are not lost. If Delete already
+	// removed the container, do not recreate its state directory.
 	rt.mu.Lock()
-	state.Status = common.StateExited
-	state.Finished = time.Now()
-	state.ExitCode = exitCode
-	if err := rt.saveState(state); err != nil {
+	persisted, err := rt.loadState(state.ID)
+	if err != nil {
+		rt.mu.Unlock()
+		return
+	}
+	persisted.Status = common.StateExited
+	persisted.Finished = time.Now()
+	persisted.ExitCode = exitCode
+	if err := rt.saveState(persisted); err != nil {
 		_, _ = os.Stderr.Write([]byte(fmt.Sprintf("DOKI: failed to save state for %s: %v\n", state.ID, err)))
 	}
 	rt.mu.Unlock()
 
 	// G10: Trigger restart monitor after process exits.
-	rt.handleRestart(state, exitCode)
+	rt.handleRestart(persisted, exitCode)
 }
 
 // G10-G14: handleRestart implements container restart policy.
 func (rt *Runtime) handleRestart(state *ContainerState, exitCode int) {
 	cfg := state.Config
+	if state.ManuallyStopped {
+		return
+	}
 	if cfg == nil || cfg.RestartPolicy == "" || cfg.RestartPolicy == common.RestartNo {
 		return
 	}
@@ -1873,6 +1885,12 @@ func (rt *Runtime) Stop(id string, timeout int) error {
 		rt.mu.Unlock()
 		rt.closePortProxies(id)
 		return nil // Idempotent: already stopped
+	}
+
+	state.ManuallyStopped = true
+	if err := rt.saveState(state); err != nil {
+		rt.mu.Unlock()
+		return fmt.Errorf("persist manual stop for container %s: %w", id, err)
 	}
 
 	sig := syscall.SIGTERM
