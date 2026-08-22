@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -198,6 +199,32 @@ func TestAndroidNativeExecAttachStreamsStdinAndStdout(t *testing.T) {
 	}
 	if string(out) != "got:hello" {
 		t.Fatalf("stdout=%q", out)
+	}
+}
+
+func TestAndroidNativeExecAttachUsesDedicatedProcessGroup(t *testing.T) {
+	p := &fakeAndroidProvider{
+		id: "fake", match: ProviderMatch{Matched: true, Required: true},
+		prepared:     &PreparedWorkload{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+		preparedExec: &PreparedExec{Executable: "/bin/sleep", Args: []string{"30"}, Env: []string{"PATH=/usr/bin:/bin"}, Cwd: "/"},
+	}
+	rt, state := newRunningAndroidProviderRuntime(t, p)
+	res, err := rt.ExecAttach(state.ID, []string{"sleep", "30"}, nil, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(res.Pid, syscall.SIGKILL)
+		_ = res.Wait()
+	})
+
+	gotPGID, err := syscall.Getpgid(res.Pid)
+	if err != nil {
+		t.Fatalf("Getpgid(%d): %v", res.Pid, err)
+	}
+	parentPGID := syscall.Getpgrp()
+	if gotPGID == parentPGID {
+		t.Fatalf("Android-native exec inherited daemon/test process group: pid=%d pgid=%d parent_pgid=%d", res.Pid, gotPGID, parentPGID)
 	}
 }
 
