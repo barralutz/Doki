@@ -584,7 +584,7 @@ Stage only files that actually changed.
 
 **Conformance contract:** unchanged Compose service semantics for `postgres:16-alpine` with user/database/password `techservice`, published `5750:5432`, named volume, and `pg_isready` healthcheck.
 
-- [ ] **Step 1: Write the conformance script before installing a new daemon**
+- [x] **Step 1: Write the conformance script before installing a new daemon**
 
 The script creates a temporary Compose project using exactly:
 
@@ -618,7 +618,7 @@ The script must verify:
 5. `down -v` removes volume;
 6. container inspect retains `5432/tcp` private and host `5750` publication.
 
-- [ ] **Step 2: Run full pre-build test gate**
+- [x] **Step 2: Run full pre-build test gate**
 
 ```bash
 /root/go1.27/bin/go test ./... -count=1
@@ -627,7 +627,7 @@ git diff --check
 
 Both must pass freshly.
 
-- [ ] **Step 3: Build Android ARM64 daemon**
+- [x] **Step 3: Build Android ARM64 daemon**
 
 ```bash
 mkdir -p /root/doki-build
@@ -636,19 +636,19 @@ GOOS=android GOARCH=arm64 CGO_ENABLED=0 /root/go1.27/bin/go build \
 sha256sum /root/doki-build/dokid-android-arm64-postgresql-provider
 ```
 
-- [ ] **Step 4: Install versioned copy without restarting dokid**
+- [x] **Step 4: Install a versioned copy and self-reexec native dokid safely**
 
-Copy to:
+Copy/build to a versioned path under:
 
 ```text
-/data/data/com.termux/files/home/doki-test/bin/dokid-android-arm64.20260821-postgresql-provider
+/data/data/com.termux/files/home/doki-test/bin/dokid-android-arm64.<versioned-name>
 ```
 
-Update only the `~/doki-test/bin/dokid` symlink. Confirm the currently running `/proc/<pid>/exe` still points to the old binary. Stop and ask the user to restart natively in Termux; never restart it from PRoot.
+Update only the `~/doki-test/bin/dokid` symlink. Verify the exact active PID, command line, and `/proc/<pid>/exe` before signaling anything. Then send `SIGUSR2`: native `dokid` re-execs itself in place. Verify that the PID is unchanged and `/proc/<pid>/exe` now resolves to the new versioned binary. Do not use a blind process restart.
 
-- [ ] **Step 5: After the user says `listo`, verify actual daemon binary**
+- [x] **Step 5: Verify the self-reexeced daemon and run on-device conformance**
 
-Verify PID, `/proc/<pid>/exe`, exact SHA, and `/version`, then run:
+Verify PID, `/proc/<pid>/exe`, exact SHA, `/_ping`, and `/version`, then run:
 
 ```bash
 scripts/android/test-compose-named-volumes.sh
@@ -657,7 +657,7 @@ scripts/android/test-postgresql-provider.sh
 
 If PostgreSQL source provisioning is triggered, inspect progress/logs and do not treat MCP transport timeout as build failure; determine status from processes/cache/logs.
 
-- [ ] **Step 6: Verify real MiPcTemuco PostgreSQL service unchanged**
+- [x] **Step 6: Verify real MiPcTemuco PostgreSQL service unchanged**
 
 Using `/root/mipctemuco/docker-compose.yml`, target only PostgreSQL first without editing YAML:
 
@@ -684,3 +684,60 @@ test "$LOCAL" = "$REMOTE"
 ```
 
 Do not begin Phase 4 until the local/remote SHA match and all Phase 3 gates above are freshly green.
+
+## Phase 3 pre-push verification record — 2026-08-22 UTC
+
+Phase 3 functional verification was completed on the physical Android `android-freecad` node. Phase 4 / MinIO was not started. Step 7 remains open until the verification commit is pushed and local/remote branch SHAs match.
+
+### Exact PostgreSQL provider
+
+- Compose image contract: `postgres:16-alpine`.
+- Image metadata: `PG_MAJOR=16`, `PG_VERSION=16.15`, `PG_SHA256=c1575341fa7bd40f5274ea465b34390f4dc64cdd0770af327005caaeb9f6b7ed`.
+- Source URL: `https://ftp.postgresql.org/pub/source/v16.15/postgresql-16.15.tar.bz2`.
+- Exact provider runtime: PostgreSQL `16.15`.
+- Runtime executable: `/data/data/com.termux/files/usr/var/lib/doki/providers/postgresql/16.15/arm64/bin/postgres`.
+- The Termux PostgreSQL 18.2 executable was not substituted.
+
+### Functional gate daemon
+
+The final code-bearing functional gate used:
+
+- code commit: `e7f25e7` (`fix(api): honor Docker container filters`);
+- native `dokid` PID: `22100`;
+- executable: `/data/data/com.termux/files/home/doki-test/bin/dokid-android-arm64.20260821-phase3-containerfilters-v15`;
+- SHA256: `01bbeaf34942a6667e78e4c57e4b14b4193376ff57e2bfd40979d62a0f4bb79d`;
+- `/version`: Doki `0.12.0`, API `1.55`, GitCommit `e7f25e7`, Go `1.27.0`, `android/arm64`;
+- `/_ping`: `OK`;
+- deployment: verified symlink update followed by `SIGUSR2` self-reexec, with PID remaining `22100`.
+
+### Fresh automated verification
+
+- `/root/go1.27/bin/go test ./... -count=1` — exit `0`.
+- `git diff --check` — clean.
+- `PROJECT=volconformancephase3e7f25e7 scripts/android/test-compose-named-volumes.sh` — exit `0`.
+- `PROJECT=pgproviderconformancephase3e7f25e7 scripts/android/test-postgresql-provider.sh` — exit `0`.
+
+The PostgreSQL conformance verified: healthy state; PostgreSQL 16.15; inspect publication `5432/tcp -> 5750`; exact provider process executable; Compose exec SQL; external SQL via `127.0.0.1:5750`; stop/start; restart; logs; port close/reopen lifecycle; persistence across `down/up` and `--force-recreate`; `down -v` volume removal; and a fresh empty database after recreation following `down -v`.
+
+### Unchanged MiPcTemuco Compose verification
+
+Using `/root/mipctemuco/docker-compose.yml` unchanged and targeting only the existing `postgres` service:
+
+- health reached `healthy`;
+- `postgres --version` returned PostgreSQL `16.15`;
+- live `/proc/<pid>/exe` resolved to the provider 16.15 executable;
+- Compose SQL returned `techservice|techservice`;
+- external SQL through host port `5750` returned `techservice|techservice`;
+- a reversible smoke row survived `docker compose up -d --force-recreate postgres`;
+- the smoke table was removed afterward;
+- the Docker map/bool project filter fix removed false cross-project `orphan containers` warnings;
+- `docker compose down` left zero MiPcTemuco PostgreSQL container states, closed port `5750`, and preserved `mipctemuco_postgres_data`.
+
+### Lifecycle regressions discovered during the real Compose gate
+
+Two additional runtime defects were reproduced with RED tests and fixed before this verification record:
+
+1. explicit `Stop` now suppresses `restart: unless-stopped` automatic restart until a later explicit `Start`;
+2. `monitorProcess` no longer recreates deleted container state after a delete/exit race.
+
+Docker container list filters were also corrected to accept Docker's map/bool filter encoding so Compose project isolation works correctly.
