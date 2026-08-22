@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -247,6 +248,8 @@ func TestNativeSourceBuilderUsesVendoredAndroidPatchesAndTermuxToolchain(t *test
 			configureSeen = true
 			for _, required := range []string{
 				"USE_UNNAMED_POSIX_SEMAPHORES=1",
+				"ac_cv_func_sync_file_range=no",
+				"--host=" + mustAndroidHostTriple(t, runtime.GOARCH),
 				filepath.Join(prefix, "bin", "sh") + " " + filepath.Join(stage, "src", "configure"),
 				"--with-icu",
 				"--with-libxml",
@@ -333,5 +336,31 @@ func TestDownloadFileWithCurlUsesNativeTermuxCurl(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(dst); err != nil || string(raw) != "downloaded" {
 		t.Fatalf("downloaded file=%q err=%v", raw, err)
+	}
+}
+
+func mustAndroidHostTriple(t *testing.T, arch string) string {
+	t.Helper()
+	host, err := androidHostTriple(arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host
+}
+
+func TestAndroidHostTriple(t *testing.T) {
+	for arch, want := range map[string]string{
+		"arm64": "aarch64-linux-android",
+		"amd64": "x86_64-linux-android",
+		"386":   "i686-linux-android",
+		"arm":   "arm-linux-androideabi",
+	} {
+		got, err := androidHostTriple(arch)
+		if err != nil || got != want {
+			t.Fatalf("arch=%s got=%q err=%v want=%q", arch, got, err, want)
+		}
+	}
+	if _, err := androidHostTriple("mips"); err == nil {
+		t.Fatal("unsupported Android PostgreSQL architecture unexpectedly accepted")
 	}
 }

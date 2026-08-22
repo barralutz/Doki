@@ -282,15 +282,21 @@ func (b *nativeSourceBuilder) Build(ctx context.Context, archivePath, installDir
 		"PKG_CONFIG_PATH=" + filepath.Join(termuxPrefix, "lib", "pkgconfig") + ":" + filepath.Join(termuxPrefix, "share", "pkgconfig"),
 	}
 	configure := filepath.Join(srcDir, "configure")
+	hostTriple, err := androidHostTriple(runtime.GOARCH)
+	if err != nil {
+		return err
+	}
 	configureArgs := append([]string{}, envArgs...)
 	configureArgs = append(configureArgs,
 		shBin, configure,
+		"--host="+hostTriple,
 		"--prefix="+installDir,
 		"--with-icu",
 		"--with-libxml",
 		"--with-openssl",
 		"--with-uuid=e2fs",
 		"USE_UNNAMED_POSIX_SEMAPHORES=1",
+		"ac_cv_func_sync_file_range=no",
 		"pgac_cv_prog_cc_LDFLAGS_EX_BE__Wl___export_dynamic=yes",
 		"pgac_cv_prog_cc_LDFLAGS__Wl___as_needed=yes",
 	)
@@ -308,6 +314,21 @@ func (b *nativeSourceBuilder) Build(ctx context.Context, archivePath, installDir
 		return err
 	}
 	return nil
+}
+
+func androidHostTriple(arch string) (string, error) {
+	switch arch {
+	case "arm64":
+		return "aarch64-linux-android", nil
+	case "amd64":
+		return "x86_64-linux-android", nil
+	case "386":
+		return "i686-linux-android", nil
+	case "arm":
+		return "arm-linux-androideabi", nil
+	default:
+		return "", fmt.Errorf("unsupported Android PostgreSQL architecture %q", arch)
+	}
 }
 
 func applyEmbeddedPatches(ctx context.Context, runner commandRunner, patchBin, srcDir, stageRoot, termuxPrefix string) error {
