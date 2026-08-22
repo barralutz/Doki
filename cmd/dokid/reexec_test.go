@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -131,5 +132,34 @@ func TestWaitForDaemonActionValidReexecSelectsTarget(t *testing.T) {
 	}
 	if action.signal != syscall.SIGUSR2 {
 		t.Fatalf("action signal=%v want SIGUSR2", action.signal)
+	}
+}
+
+func TestExecDaemonPreservesTargetArgsAndEnvironment(t *testing.T) {
+	target := "/data/data/com.termux/files/home/doki-test/bin/dokid-v2"
+	args := []string{"./dokid", "--debug"}
+	env := []string{"PREFIX=/data/data/com.termux/files/usr", "HOME=/data/data/com.termux/files/home"}
+	sentinel := errors.New("exec returned")
+
+	var gotTarget string
+	var gotArgs, gotEnv []string
+	err := execDaemon(target, args, env, func(path string, argv, environ []string) error {
+		gotTarget = path
+		gotArgs = append([]string(nil), argv...)
+		gotEnv = append([]string(nil), environ...)
+		return sentinel
+	})
+
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("exec error=%v want sentinel", err)
+	}
+	if gotTarget != target {
+		t.Fatalf("target=%q want=%q", gotTarget, target)
+	}
+	if !reflect.DeepEqual(gotArgs, args) {
+		t.Fatalf("args=%q want=%q", gotArgs, args)
+	}
+	if !reflect.DeepEqual(gotEnv, env) {
+		t.Fatalf("env=%q want=%q", gotEnv, env)
 	}
 }

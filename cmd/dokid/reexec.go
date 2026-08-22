@@ -88,3 +88,10 @@ func waitForDaemonAction(signals <-chan os.Signal, resolve func() (string, error
 	}
 	return daemonAction{kind: daemonActionShutdown}
 }
+
+func execDaemon(target string, args, env []string, execFn func(string, []string, []string) error) error {
+	if err := execFn(target, args, env); err != nil {
+		return fmt.Errorf("exec dokid target %s: %w", target, err)
+	}
+	return nil
+}
