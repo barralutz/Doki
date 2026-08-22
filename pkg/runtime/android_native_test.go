@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -454,6 +455,71 @@ func TestAndroidNativeRestartUsesPersistedProviderID(t *testing.T) {
 	if current.Status != common.StateRunning || current.Mode != ModeAndroidNative {
 		t.Fatalf("state after restart=%+v", current)
 	}
+}
+
+func TestStopReleasesAndroidPortProxyBeforeReturning(t *testing.T) {
+	provider := &fakeAndroidProvider{
+		id:    "fake-stop-sync",
+		match: ProviderMatch{Matched: true, Required: true},
+	}
+	reg := NewAndroidProviderRegistry()
+	_ = reg.Register(provider)
+	rt := NewRuntime(t.TempDir(), nil, WithAndroidProviderRegistry(reg))
+	state, err := rt.Create(&Config{ID: "native-stop-sync", ImageRef: "example:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("/bin/sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	reaped := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(reaped)
+	}()
+
+	state.Pid = cmd.Process.Pid
+	state.Status = common.StateRunning
+	state.Started = time.Now()
+	if err := rt.saveState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	listenPort := freeTCPPort(t)
+	forward, err := startTCPForward(PortForward{
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		TargetHost: "127.0.0.1",
+		TargetPort: 5432,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer forward.Close()
+	rt.portProxyMu.Lock()
+	rt.portProxies[state.ID] = []io.Closer{forward}
+	rt.portProxyMu.Unlock()
+
+	if err := rt.Stop(state.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reaped:
+	case <-time.After(time.Second):
+		t.Fatal("provider process was not reaped after Stop")
+	}
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatalf("Stop returned before releasing provider port proxy: %v", err)
+	}
+	_ = ln.Close()
 }
 
 func TestAndroidNativePortForwardLifecycle(t *testing.T) {

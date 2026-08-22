@@ -1871,6 +1871,7 @@ func (rt *Runtime) Stop(id string, timeout int) error {
 	}
 	if state.Status != common.StateRunning {
 		rt.mu.Unlock()
+		rt.closePortProxies(id)
 		return nil // Idempotent: already stopped
 	}
 
@@ -1893,6 +1894,7 @@ func (rt *Runtime) Stop(id string, timeout int) error {
 				slog.Warn("saveState failed", "error", err)
 			}
 			rt.mu.Unlock()
+			rt.closePortProxies(id)
 			return nil
 		}
 		rt.mu.Unlock()
@@ -1922,6 +1924,7 @@ func (rt *Runtime) Stop(id string, timeout int) error {
 				}
 			}
 			rt.mu.Unlock()
+			rt.closePortProxies(id)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1945,6 +1948,7 @@ func (rt *Runtime) Stop(id string, timeout int) error {
 				}
 			}
 			rt.mu.Unlock()
+			rt.closePortProxies(id)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1961,6 +1965,7 @@ func (rt *Runtime) Stop(id string, timeout int) error {
 		}
 	}
 	rt.mu.Unlock()
+	rt.closePortProxies(id)
 	return nil
 }
 
