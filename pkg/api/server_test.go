@@ -354,3 +354,47 @@ func TestVolumesListHonorsComposeLabelFilters(t *testing.T) {
 		t.Fatalf("filtered volumes=%+v, want only pgprovider_postgres_data", body.Volumes)
 	}
 }
+
+func TestContainersListHonorsDockerMapLabelFilters(t *testing.T) {
+	rt := dokiruntime.NewRuntime(t.TempDir(), nil)
+	for _, tc := range []struct {
+		id      string
+		project string
+	}{
+		{id: "mipctemuco-container", project: "mipctemuco"},
+		{id: "other-container", project: "otherproject"},
+	} {
+		state := &dokiruntime.ContainerState{
+			ID:      tc.id,
+			Status:  common.StateExited,
+			Created: time.Now().UTC(),
+			Config: &dokiruntime.Config{
+				ImageRef: "alpine:latest",
+				Labels: map[string]string{
+					"com.docker.compose.project": tc.project,
+					"com.docker.compose.service": "worker",
+				},
+				Annotations: map[string]string{"doki.name": tc.id},
+			},
+		}
+		if err := rt.SaveState(state); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := &Server{runtime: rt}
+	filters := `%7B%22label%22%3A%7B%22com.docker.compose.project%3Dmipctemuco%22%3Atrue%7D%7D`
+	req := httptest.NewRequest(http.MethodGet, "/containers/json?all=1&filters="+filters, nil)
+	rr := httptest.NewRecorder()
+	s.handleContainersList(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var items []common.ContainerInfo
+	if err := json.Unmarshal(rr.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "mipctemuco-container" {
+		t.Fatalf("filtered containers=%+v, want only mipctemuco-container", items)
+	}
+}

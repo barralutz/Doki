@@ -558,10 +558,28 @@ func (s *Server) handleContainersList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse filters.
-	var filters map[string][]string
+	// Docker accepts both array and map/bool filter encodings. Compose uses
+	// the map/bool form for label filters, so normalize both representations.
+	var statusFilters, nameFilters, labelFilters []string
 	if filtersStr != "" {
-		_ = json.Unmarshal([]byte(filtersStr), &filters)
+		var filters map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(filtersStr), &filters); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid container filters")
+			return
+		}
+		var err error
+		if statusFilters, err = dockerFilterValues(filters["status"]); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid container status filters")
+			return
+		}
+		if nameFilters, err = dockerFilterValues(filters["name"]); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid container name filters")
+			return
+		}
+		if labelFilters, err = dockerFilterValues(filters["label"]); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid container label filters")
+			return
+		}
 	}
 
 	containers := make([]common.ContainerInfo, 0)
@@ -573,10 +591,10 @@ func (s *Server) handleContainersList(w http.ResponseWriter, r *http.Request) {
 		info := s.stateToInfo(state)
 
 		// Apply filters.
-		if filters != nil {
+		if len(statusFilters) > 0 || len(nameFilters) > 0 || len(labelFilters) > 0 {
 			skip := false
 			// Filter by status.
-			if statusFilters, ok := filters["status"]; ok {
+			if len(statusFilters) > 0 {
 				match := false
 				for _, sf := range statusFilters {
 					if (sf == "running" && state.Status == common.StateRunning) ||
@@ -592,7 +610,7 @@ func (s *Server) handleContainersList(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			// Filter by name.
-			if nameFilters, ok := filters["name"]; ok && !skip {
+			if len(nameFilters) > 0 && !skip {
 				match := false
 				containerName := ""
 				if state.Config != nil && state.Config.Annotations != nil {
@@ -609,7 +627,7 @@ func (s *Server) handleContainersList(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			// Filter by label.
-			if labelFilters, ok := filters["label"]; ok && !skip {
+			if len(labelFilters) > 0 && !skip {
 				for _, lf := range labelFilters {
 					parts := strings.SplitN(lf, "=", 2)
 					key := parts[0]
