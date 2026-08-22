@@ -1494,7 +1494,13 @@ func (s *Server) writeLogLine(w io.Writer, line string, stdout, stderr bool, str
 func (s *Server) handleContainerDelete(w http.ResponseWriter, r *http.Request, id string) {
 	force := r.URL.Query().Get("force") == "true"
 
-	s.network.RemovePortForwardings(id)
+	var containerPID int
+	if state, err := s.runtime.State(id); err == nil && state != nil {
+		containerPID = state.Pid
+	}
+	if s.network != nil {
+		s.network.RemovePortForwardings(id)
+	}
 
 	if err := s.runtime.Delete(id, force); err != nil {
 		if common.IsNotFound(err) {
@@ -1505,6 +1511,22 @@ func (s *Server) handleContainerDelete(w http.ResponseWriter, r *http.Request, i
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return
+	}
+	if s.network != nil {
+		networks, err := s.network.ListNetworks()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, nw := range networks {
+			if _, connected := nw.Containers[id]; !connected {
+				continue
+			}
+			if err := s.network.Disconnect(nw.ID, id, containerPID); err != nil {
+				s.writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
